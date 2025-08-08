@@ -648,6 +648,10 @@ if uploaded_files:
                                                     max_value = valid_values.max()
                                                     half_killing_target = max_value / 2
                                                     
+                                                    # Find index of max value
+                                                    idx_max_value = well_data_series.idxmax()
+                                                    time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
+                                                    
                                                     # Find time closest to half-killing target in entire dataset
                                                     idx_closest_to_target = (well_data_series - half_killing_target).abs().idxmin()
                                                     
@@ -655,9 +659,8 @@ if uploaded_files:
                                                     closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
                                                     closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
                                                     
-                                                    # For new approach, half-killing time is just the time when target is reached
-                                                    # (no subtraction from normalization point since we're not using normalization)
-                                                    half_killing_time_calc = closest_to_0_5_hour_val
+                                                    # CORRECTED: Half-killing time = time at half-killing target - time at max value
+                                                    half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
                                                     
                                                     # Determine killed status: if any value in dataset <= 0.5
                                                     numeric_values_for_killing_check = well_data_series.dropna()
