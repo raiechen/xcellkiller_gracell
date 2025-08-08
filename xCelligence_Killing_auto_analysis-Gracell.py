@@ -13,9 +13,10 @@ def determine_assay_status(extracted_treatment_data, main_df):
 
     for treatment_group, assays in extracted_treatment_data.items():
         for assay_name_key, input_ids in assays.items():
-            # Ensure assay_name_key is treated as a string for startswith
+            # Ensure assay_name_key is treated as a string and detect medium/media samples
             assay_name_str = str(assay_name_key).strip()
-            if assay_name_str.upper().startswith("MED"):
+            # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
+            if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
                 # First "Med" sample found, its status determines the overall assay status.
                 
                 # Ensure input_ids are processed as strings and handle None
@@ -412,7 +413,8 @@ if uploaded_files:
                 for treatment_group, assays in st.session_state.extracted_treatment_data.items():
                     for assay_name_key, input_ids in assays.items():
                         assay_name_str = str(assay_name_key).strip()
-                        if assay_name_str.upper().startswith("MED"):
+                        # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
+                        if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
                             med_sample_found = True
                             
                             potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
@@ -574,13 +576,25 @@ if uploaded_files:
                                         except Exception:
                                             continue  # Skip this column if there's an error
                                     
-                                    # Display dataframe with highlighting
-                                    if half_killing_indices:
-                                        def highlight_half_killing_times(data):
+                                    # Compute max indices per well for additional highlighting
+                                    max_indices = {}
+                                    for well_col_name_max in valid_well_columns_for_assay:
+                                        if well_col_name_max not in assay_display_df.columns:
+                                            continue
+                                        try:
+                                            s_num = pd.to_numeric(assay_display_df[well_col_name_max], errors='coerce')
+                                            if s_num.notna().any():
+                                                max_indices[well_col_name_max] = s_num.idxmax()
+                                        except Exception:
+                                            continue
+
+                                    # Display dataframe with highlighting (half-kill and max values)
+                                    if half_killing_indices or max_indices:
+                                        def highlight_special_cells(data):
                                             # Create a DataFrame of the same shape filled with empty strings
                                             highlight_df = pd.DataFrame('', index=data.index, columns=data.columns)
-                                            
-                                            # Highlight the half-killing time rows for each well column
+
+                                            # Highlight half-killing time rows for each well column
                                             for well_col, target_idx in half_killing_indices.items():
                                                 if well_col in highlight_df.columns and target_idx in highlight_df.index:
                                                     highlight_df.loc[target_idx, well_col] = 'background-color: yellow; font-weight: bold'
@@ -589,10 +603,28 @@ if uploaded_files:
                                                         highlight_df.loc[target_idx, 'Time (Hour)'] = 'background-color: lightyellow'
                                                     if 'Time (hh:mm:ss)' in highlight_df.columns:
                                                         highlight_df.loc[target_idx, 'Time (hh:mm:ss)'] = 'background-color: lightyellow'
-                                            
+
+                                            # Highlight max value for each well column
+                                            for well_col, max_idx in max_indices.items():
+                                                if well_col in highlight_df.columns and max_idx in highlight_df.index:
+                                                    # If already highlighted (e.g., coincides), append style
+                                                    existing = highlight_df.loc[max_idx, well_col]
+                                                    sep = '; ' if existing else ''
+                                                    highlight_df.loc[max_idx, well_col] = f"{existing}{sep}background-color: lightgreen; font-weight: bold"
+                                                    # Also lightly highlight the time columns for that max row
+                                                    if 'Time (Hour)' in highlight_df.columns:
+                                                        existing_th = highlight_df.loc[max_idx, 'Time (Hour)']
+                                                        sep_th = '; ' if existing_th else ''
+                                                        # use a lighter green than the well cell
+                                                        highlight_df.loc[max_idx, 'Time (Hour)'] = f"{existing_th}{sep_th}background-color: honeydew"
+                                                    if 'Time (hh:mm:ss)' in highlight_df.columns:
+                                                        existing_ts = highlight_df.loc[max_idx, 'Time (hh:mm:ss)']
+                                                        sep_ts = '; ' if existing_ts else ''
+                                                        highlight_df.loc[max_idx, 'Time (hh:mm:ss)'] = f"{existing_ts}{sep_ts}background-color: honeydew"
+
                                             return highlight_df
-                                        
-                                        st.dataframe(assay_display_df.style.apply(highlight_half_killing_times, axis=None))
+
+                                        st.dataframe(assay_display_df.style.apply(highlight_special_cells, axis=None))
                                     else:
                                         st.dataframe(assay_display_df)
     
