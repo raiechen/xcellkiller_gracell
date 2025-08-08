@@ -62,9 +62,17 @@ def determine_assay_status(extracted_treatment_data, main_df):
     # If the loops complete, no "Med" sample was found. This is a failure condition
     return "Fail"
 # Helper function to convert multiple DataFrames to a single Excel bytes object, each DF on a new sheet
-def dfs_to_excel_bytes(dfs_map):
+def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Define format for highlighting
+        yellow_bold_format = workbook.add_format({'bg_color': '#FFFF00', 'bold': True})
+        light_yellow_format = workbook.add_format({'bg_color': '#FFFFE0'})
+        green_bold_format = workbook.add_format({'bg_color': '#90EE90', 'bold': True})
+        honeydew_format = workbook.add_format({'bg_color': '#F0FFF0'})
+        
         for sheet_name, df in dfs_map.items():
             if df is not None and not df.empty: # Only write if DataFrame exists and is not empty
                 # Ensure sheet name is within Excel's 31-character limit
@@ -73,7 +81,60 @@ def dfs_to_excel_bytes(dfs_map):
                 invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
                 for char in invalid_chars:
                     safe_sheet_name = safe_sheet_name.replace(char, '_')
+                
                 df.to_excel(writer, index=False, sheet_name=safe_sheet_name)
+                
+                # Apply highlighting if data is provided for this sheet
+                if highlighting_data and safe_sheet_name in highlighting_data:
+                    worksheet = writer.sheets[safe_sheet_name]
+                    highlight_info = highlighting_data[safe_sheet_name]
+                    
+                    # Apply half-killing highlighting (yellow)
+                    if 'half_killing_indices' in highlight_info:
+                        for well_col, target_idx in highlight_info['half_killing_indices'].items():
+                            if well_col in df.columns:
+                                col_idx = df.columns.get_loc(well_col)
+                                row_idx = target_idx + 1  # +1 for header row
+                                worksheet.write(row_idx, col_idx, df.iloc[target_idx, col_idx], yellow_bold_format)
+                                
+                                # Highlight time columns for the same row
+                                if 'Time (Hour)' in df.columns:
+                                    time_hour_col_idx = df.columns.get_loc('Time (Hour)')
+                                    worksheet.write(row_idx, time_hour_col_idx, df.iloc[target_idx, time_hour_col_idx], light_yellow_format)
+                                if 'Time (hh:mm:ss)' in df.columns:
+                                    time_hhmmss_col_idx = df.columns.get_loc('Time (hh:mm:ss)')
+                                    worksheet.write(row_idx, time_hhmmss_col_idx, df.iloc[target_idx, time_hhmmss_col_idx], light_yellow_format)
+                    
+                    # Apply max value highlighting (green)
+                    if 'max_indices' in highlight_info:
+                        for well_col, max_idx in highlight_info['max_indices'].items():
+                            if well_col in df.columns:
+                                col_idx = df.columns.get_loc(well_col)
+                                row_idx = max_idx + 1  # +1 for header row
+                                # Check if already highlighted (half-killing), if so combine formats
+                                current_value = df.iloc[max_idx, col_idx]
+                                if (highlight_info.get('half_killing_indices', {}).get(well_col) == max_idx):
+                                    # Cell has both highlights - use a combined format or prioritize one
+                                    worksheet.write(row_idx, col_idx, current_value, yellow_bold_format)
+                                else:
+                                    worksheet.write(row_idx, col_idx, current_value, green_bold_format)
+                                
+                                # Highlight time columns for max row
+                                if 'Time (Hour)' in df.columns:
+                                    time_hour_col_idx = df.columns.get_loc('Time (Hour)')
+                                    current_time_hour = df.iloc[max_idx, time_hour_col_idx]
+                                    if (highlight_info.get('half_killing_indices', {}).get(well_col) == max_idx):
+                                        worksheet.write(row_idx, time_hour_col_idx, current_time_hour, light_yellow_format)
+                                    else:
+                                        worksheet.write(row_idx, time_hour_col_idx, current_time_hour, honeydew_format)
+                                if 'Time (hh:mm:ss)' in df.columns:
+                                    time_hhmmss_col_idx = df.columns.get_loc('Time (hh:mm:ss)')
+                                    current_time_hhmmss = df.iloc[max_idx, time_hhmmss_col_idx]
+                                    if (highlight_info.get('half_killing_indices', {}).get(well_col) == max_idx):
+                                        worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_yellow_format)
+                                    else:
+                                        worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, honeydew_format)
+    
     processed_data = output.getvalue()
     return processed_data
 
@@ -134,7 +195,9 @@ if uploaded_files:
                 'assay_status': "Pending",
                 'assay_type': "Error - test type can't be found in file name",
                 'closest_df': None,
-                'stats_df': None
+                'stats_df': None,
+                'detailed_sample_data': [],
+                'highlighting_data': {}
             }
     
                 # Specific sheet name and header text
@@ -466,7 +529,7 @@ if uploaded_files:
                     st.markdown("❌ Fail")
             
             with col1:
-                st.markdown("2. All medium index values after normalized index remain above 0.5")
+                st.markdown("2. All medium index values after treatment remain above 0.5")
             with col2:
                 if all_values_above_threshold:
                     st.markdown("✅ Pass")
@@ -571,8 +634,17 @@ if uploaded_files:
                                             if not valid_values.empty:
                                                 max_value = valid_values.max()
                                                 half_killing_target = max_value / 2
-                                                idx_closest_to_target = (well_data_series_hl - half_killing_target).abs().idxmin()
-                                                half_killing_indices[well_col_name_hl] = idx_closest_to_target
+                                                
+                                                # Find index of max value within the valid values (above threshold)
+                                                idx_max_value = valid_values.idxmax()
+                                                
+                                                # Only search for half-killing target AFTER the max value
+                                                data_after_max = well_data_series_hl.loc[idx_max_value:]
+                                                if len(data_after_max) > 1:  # Need at least one point after max
+                                                    data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                    if not data_after_max.empty:
+                                                        idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                        half_killing_indices[well_col_name_hl] = idx_closest_to_target
                                         except Exception:
                                             continue  # Skip this column if there's an error
                                     
@@ -627,6 +699,19 @@ if uploaded_files:
                                         st.dataframe(assay_display_df.style.apply(highlight_special_cells, axis=None))
                                     else:
                                         st.dataframe(assay_display_df)
+                                    
+                                    # Collect detailed sample data for export
+                                    sample_sheet_name = f"{assay_name_key}_{treatment_group}".replace(" ", "_")[:25]
+                                    current_file_results['detailed_sample_data'].append({
+                                        'sheet_name': sample_sheet_name,
+                                        'dataframe': assay_display_df.copy()
+                                    })
+                                    
+                                    # Collect highlighting data for this sample
+                                    current_file_results['highlighting_data'][sample_sheet_name] = {
+                                        'half_killing_indices': half_killing_indices.copy(),
+                                        'max_indices': max_indices.copy()
+                                    }
     
                                     # --- Half-Killing Time Calculation for each well in this assay_display_df ---
                                     for well_col_name_calc in valid_well_columns_for_assay:
@@ -680,19 +765,29 @@ if uploaded_files:
                                                     max_value = valid_values.max()
                                                     half_killing_target = max_value / 2
                                                     
-                                                    # Find index of max value
-                                                    idx_max_value = well_data_series.idxmax()
+                                                    # Find index of max value within the valid values (above threshold)
+                                                    idx_max_value = valid_values.idxmax()
                                                     time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
                                                     
-                                                    # Find time closest to half-killing target in entire dataset
-                                                    idx_closest_to_target = (well_data_series - half_killing_target).abs().idxmin()
-                                                    
-                                                    # Get the time values
-                                                    closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                    closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
-                                                    
-                                                    # CORRECTED: Half-killing time = time at half-killing target - time at max value
-                                                    half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                    # Find time closest to half-killing target ONLY AFTER the max value
+                                                    data_after_max = well_data_series.loc[idx_max_value:]
+                                                    if len(data_after_max) > 1:  # Need at least one point after max
+                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                        if not data_after_max.empty:
+                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                            
+                                                            # Get the time values
+                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+                                                            
+                                                            # Half-killing time = time at half-killing target - time at max value
+                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                        else:
+                                                            # No data after max, can't calculate half-killing time
+                                                            continue
+                                                    else:
+                                                        # No data after max, can't calculate half-killing time
+                                                        continue
                                                     
                                                     # CORRECTED LOGIC: Determine killed status based on assay type
                                                     # BCMA: Check if cells grew ≥0.4, then see if they drop back below 0.5
@@ -956,43 +1051,42 @@ if uploaded_files:
             with st.expander("Combined Half-killing Time Statistics by Sample", expanded=False):
                 st.dataframe(combined_stats_df)
         
-        # Add individual file data as separate sheets
-        for file_index, (file_name, results) in enumerate(st.session_state.all_files_results.items(), 1):
-            # Create a safe, short sheet name that fits Excel's 31-character limit
-            # Remove common extensions and problematic characters
-            base_name = file_name.replace('.xlsx', '').replace('.xls', '').replace(' ', '_')
-            # Remove special characters that might cause issues
-            base_name = ''.join(c for c in base_name if c.isalnum() or c in ['_', '-'])
-            
-            # Create sheet names with sufficient room for suffix
-            # Max 31 chars: leave 9 chars for "_Closest" or "_Stats" suffix
-            max_base_length = 22
-            
-            if len(base_name) > max_base_length:
-                # Truncate and add file number to ensure uniqueness
-                safe_base = f"File{file_index}_{base_name[:max_base_length-8]}"
-            else:
-                safe_base = base_name
-            
-            # Ensure the final names don't exceed 31 characters
-            closest_sheet_name = safe_base + "_Closest"
-            stats_sheet_name = safe_base + "_Stats"
-            
-            # Double-check and truncate if still too long
-            if len(closest_sheet_name) > 31:
-                closest_sheet_name = safe_base[:22] + "_Closest"
-            if len(stats_sheet_name) > 31:
-                stats_sheet_name = safe_base[:25] + "_Stats"
-            
-            if results['closest_df'] is not None:
-                combined_data_to_export[closest_sheet_name] = results['closest_df']
-            
-            if results['stats_df'] is not None:
-                combined_data_to_export[stats_sheet_name] = results['stats_df']
+        # Add detailed sample data from all files
+        combined_highlighting_data = {}
+        used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
+        sheet_counter = 1
+        
+        for file_name, results in st.session_state.all_files_results.items():
+            if results['detailed_sample_data']:
+                file_prefix = file_name.replace('.xlsx', '').replace('.xls', '')[:10]
+                for sample_data in results['detailed_sample_data']:
+                    # Create base sheet name with file prefix
+                    base_sheet_name = f"{file_prefix}_{sample_data['sheet_name']}"[:27]  # Leave room for counter
+                    # Remove invalid characters for Excel sheet names
+                    invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
+                    for char in invalid_chars:
+                        base_sheet_name = base_sheet_name.replace(char, '_')
+                    
+                    # Ensure unique sheet name
+                    sheet_name = base_sheet_name
+                    if sheet_name.lower() in [name.lower() for name in used_sheet_names]:
+                        # Add counter to make it unique
+                        sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                        while sheet_name.lower() in [name.lower() for name in used_sheet_names]:
+                            sheet_counter += 1
+                            sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                        sheet_counter += 1
+                    
+                    used_sheet_names.add(sheet_name)
+                    combined_data_to_export[sheet_name] = sample_data['dataframe']
+                    
+                    # Add highlighting data for this sheet
+                    if sample_data['sheet_name'] in results['highlighting_data']:
+                        combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
         
         # Download button for combined results
         if combined_data_to_export:
-            excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export)
+            excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
             st.download_button(
                 label="📥 Download Combined Results from All Files", 
                 data=excel_bytes_combined,
