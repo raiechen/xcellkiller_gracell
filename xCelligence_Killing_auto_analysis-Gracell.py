@@ -662,11 +662,29 @@ if uploaded_files:
                                                     # CORRECTED: Half-killing time = time at half-killing target - time at max value
                                                     half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
                                                     
-                                                    # Determine killed status: if any value in dataset <= 0.5
-                                                    numeric_values_for_killing_check = well_data_series.dropna()
-                                                    if not numeric_values_for_killing_check.empty:
-                                                        if (numeric_values_for_killing_check <= 0.5).any():
-                                                            killed_status = "Yes"
+                                                    # CORRECTED LOGIC: Determine killed status based on assay type
+                                                    # BCMA: Check if cells grew ≥0.4, then see if they drop back below 0.5
+                                                    # CD19: Check if cells grew ≥0.8, then see if they drop back below 0.5
+                                                    if assay_type == "BCMA":
+                                                        # Check if cells ever grow >= 0.4
+                                                        above_threshold_values = well_data_series[well_data_series >= 0.4]
+                                                        if not above_threshold_values.empty:
+                                                            # Find first time above 0.4
+                                                            first_above_threshold_idx = above_threshold_values.index[0]
+                                                            # Check if values drop back below 0.5 after growing above 0.4
+                                                            values_after_growth = well_data_series.loc[first_above_threshold_idx+1:]
+                                                            if not values_after_growth.empty and (values_after_growth < 0.5).any():
+                                                                killed_status = "Yes"
+                                                    elif assay_type == "CD19":
+                                                        # Check if cells ever grow >= 0.8
+                                                        above_threshold_values = well_data_series[well_data_series >= 0.8]
+                                                        if not above_threshold_values.empty:
+                                                            # Find first time above 0.8
+                                                            first_above_threshold_idx = above_threshold_values.index[0]
+                                                            # Check if values drop back below 0.5 after growing above 0.8
+                                                            values_after_growth = well_data_series.loc[first_above_threshold_idx+1:]
+                                                            if not values_after_growth.empty and (values_after_growth < 0.5).any():
+                                                                killed_status = "Yes"
                                                 else:
                                                     st.caption(f"For {assay_name_key} - Well {well_col_name_calc}: No values found >= {threshold_text} for {assay_type} calculation.")
                                                     continue
@@ -736,6 +754,7 @@ if uploaded_files:
                         st.markdown("---")
                         st.header("Half-killing Time Statistics by Sample")
                         st.write ("Valid sample: %CV <= 30% & Killed below 0.5 = Yes for all wells")
+                        
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
                         closest_df["Half-killing time (Hour)"] = pd.to_numeric(closest_df["Half-killing time (Hour)"], errors='coerce')
