@@ -11,6 +11,10 @@ def determine_assay_status(extracted_treatment_data, main_df):
     if not extracted_treatment_data or main_df is None or main_df.empty:
         return "Pending"
 
+    # Check if Time (Hour) column exists
+    if "Time (Hour)" not in main_df.columns:
+        return "Fail"
+
     for treatment_group, assays in extracted_treatment_data.items():
         for assay_name_key, input_ids in assays.items():
             # Ensure assay_name_key is treated as a string and detect medium/media samples
@@ -18,10 +22,10 @@ def determine_assay_status(extracted_treatment_data, main_df):
             # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
             if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
                 # First "Med" sample found, its status determines the overall assay status.
-                
+
                 # Ensure input_ids are processed as strings and handle None
                 potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
-                
+
                 valid_well_columns_for_assay = [name for name in potential_column_names if name in main_df.columns]
 
                 if not valid_well_columns_for_assay:
@@ -31,32 +35,41 @@ def determine_assay_status(extracted_treatment_data, main_df):
                 for well_col_name in valid_well_columns_for_assay:
                     try:
                         well_data_series = pd.to_numeric(main_df[well_col_name], errors='coerce')
-                        
-                        # Find index where value is 1
-                        indices_at_1 = well_data_series[well_data_series == 1].index
-                        
-                        if not indices_at_1.empty:
-                            idx_at_1 = indices_at_1[0] # Take the first occurrence
-                            
-                            # Data after the '1'
-                            # .loc[idx_at_1:] includes the row with '1'. .iloc[1:] takes rows *after* that.
-                            well_data_after_1 = well_data_series.loc[idx_at_1:].iloc[1:]
-                            valid_numeric_after_1 = well_data_after_1.dropna() # Consider only actual numbers after '1'
-                            
-                            if not valid_numeric_after_1.empty:
-                                # Corrected logic: Fail if value is LESS THAN OR EQUAL TO 0.5
-                                is_fail_condition_met_after_1 = (valid_numeric_after_1 <= 0.5).any()
-                                if is_fail_condition_met_after_1:
-                                    return "Fail" # Found a value <= 0.5 after '1'.
-                            # else: Column has no valid numeric values AFTER 1 (and after dropna()) - does not fail
-                        # else: Value '1' not found in column - does not fail
-                            # If '1' is not found, this column does not trigger a fail. Continue to next column.
-                                
+                        time_series = pd.to_numeric(main_df["Time (Hour)"], errors='coerce')
+
+                        # NEW LOGIC: Find local max before 8 hours
+                        # Filter data for time <= 8 hours
+                        before_8h_mask = time_series <= 8
+                        data_before_8h = well_data_series[before_8h_mask]
+                        time_before_8h = time_series[before_8h_mask]
+
+                        if data_before_8h.empty:
+                            continue  # No data before 8 hours
+
+                        # Find local maximum in data before 8 hours
+                        local_max_idx = data_before_8h.idxmax()
+                        local_max_value = data_before_8h.loc[local_max_idx]
+                        local_max_time = time_before_8h.loc[local_max_idx]
+
+                        # Find data after the local max time
+                        after_max_mask = time_series > local_max_time
+                        data_after_max = well_data_series[after_max_mask]
+
+                        if data_after_max.empty:
+                            continue  # No data after max time
+
+                        # Check if any value after max time drops below half of the local max
+                        half_max_threshold = local_max_value / 2
+                        drops_below_half = (data_after_max < half_max_threshold).any()
+
+                        if drops_below_half:
+                            return "Fail"  # Cell index dropped below half of max
+
                     except (ValueError, TypeError): # Keep it generic to catch any processing error for the column
                         return "Fail"
 
                 # If all valid_well_columns_for_assay for this Med sample were processed
-                # and none triggered a "Fail" based on the "after 1" logic, then this Med sample (and thus the assay) is "Pass".
+                # and none triggered a "Fail" based on the new logic, then this Med sample (and thus the assay) is "Pass".
                 return "Pass"
 
     # If the loops complete, no "Med" sample was found. This is a failure condition
@@ -470,58 +483,78 @@ if uploaded_files:
             # Determine criteria status
             med_sample_found = False
             valid_columns_found = False
-            all_values_above_threshold = True
-            
-            if st.session_state.get('extracted_treatment_data') is not None:
-                for treatment_group, assays in st.session_state.extracted_treatment_data.items():
-                    for assay_name_key, input_ids in assays.items():
-                        assay_name_str = str(assay_name_key).strip()
-                        # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
-                        if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
-                            med_sample_found = True
-                            
-                            potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
-                            valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
-                            
-                            if valid_well_columns:
-                                valid_columns_found = True
-                                
-                                for well_col_name in valid_well_columns:
-                                    try:
-                                        # Convert to numeric, coercing errors to NaN
-                                        well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
-                                        
-                                        # Check if we have any valid numeric data after coercion
-                                        if well_data_series.notna().sum() == 0:
-                                            # No valid numeric data in this column
-                                            continue
-                                            
-                                        # Find indices where value is 1
-                                        indices_at_1 = well_data_series[well_data_series == 1].index
-                                        
-                                        if not indices_at_1.empty:
-                                            idx_at_1 = indices_at_1[0]
-                                            
-                                            # Logic to determine killed_status
-                                            data_for_killing_check = well_data_series.loc[idx_at_1:].iloc[1:]
-                                            if not data_for_killing_check.empty:
-                                                numeric_values_for_killing_check = data_for_killing_check.dropna()
-                                                if not numeric_values_for_killing_check.empty:
-                                                    if (numeric_values_for_killing_check <= 0.5).any():
-                                                        all_values_above_threshold = False
-                                    except (ValueError, TypeError, KeyError, IndexError) as e:
-                                        st.warning(f"Error processing column {well_col_name}: {str(e)}")
-                                        all_values_above_threshold = False
-            
+            local_max_criteria_pass = True
+
+            if st.session_state.get('extracted_treatment_data') is not None and st.session_state.get('main_data_df') is not None:
+                # Check if Time (Hour) column exists
+                if "Time (Hour)" not in st.session_state.main_data_df.columns:
+                    local_max_criteria_pass = False
+                else:
+                    for treatment_group, assays in st.session_state.extracted_treatment_data.items():
+                        for assay_name_key, input_ids in assays.items():
+                            assay_name_str = str(assay_name_key).strip()
+                            # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
+                            if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
+                                med_sample_found = True
+
+                                potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
+
+                                if valid_well_columns:
+                                    valid_columns_found = True
+
+                                    for well_col_name in valid_well_columns:
+                                        try:
+                                            # Convert to numeric, coercing errors to NaN
+                                            well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
+                                            time_series = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+
+                                            # Check if we have any valid numeric data after coercion
+                                            if well_data_series.notna().sum() == 0:
+                                                # No valid numeric data in this column
+                                                continue
+
+                                            # NEW LOGIC: Find local max before 8 hours
+                                            # Filter data for time <= 8 hours
+                                            before_8h_mask = time_series <= 8
+                                            data_before_8h = well_data_series[before_8h_mask]
+                                            time_before_8h = time_series[before_8h_mask]
+
+                                            if data_before_8h.empty:
+                                                continue  # No data before 8 hours
+
+                                            # Find local maximum in data before 8 hours
+                                            local_max_idx = data_before_8h.idxmax()
+                                            local_max_value = data_before_8h.loc[local_max_idx]
+                                            local_max_time = time_before_8h.loc[local_max_idx]
+
+                                            # Find data after the local max time
+                                            after_max_mask = time_series > local_max_time
+                                            data_after_max = well_data_series[after_max_mask]
+
+                                            if data_after_max.empty:
+                                                continue  # No data after max time
+
+                                            # Check if any value after max time drops below half of the local max
+                                            half_max_threshold = local_max_value / 2
+                                            drops_below_half = (data_after_max < half_max_threshold).any()
+
+                                            if drops_below_half:
+                                                local_max_criteria_pass = False
+
+                                        except (ValueError, TypeError, KeyError, IndexError) as e:
+                                            st.warning(f"Error processing column {well_col_name}: {str(e)}")
+                                            local_max_criteria_pass = False
+
             # If no Med sample was found, criterion 2 must automatically fail
             if not med_sample_found:
-                all_values_above_threshold = False
+                local_max_criteria_pass = False
 
             # Create a styled checkbox for each criterion
             col1, col2 = st.columns([3, 1])
             
             with col1:
-                st.markdown("1. Medium sample found in data")
+                st.markdown("1. Medium/only sample found in data")
             with col2:
                 if med_sample_found:
                     st.markdown("✅ Pass")
@@ -529,9 +562,9 @@ if uploaded_files:
                     st.markdown("❌ Fail")
             
             with col1:
-                st.markdown("2. All medium index values after treatment remain above 0.5")
+                st.markdown("2. Medium/only cell index does not drop below half of local max (before 8h)")
             with col2:
-                if all_values_above_threshold:
+                if local_max_criteria_pass:
                     st.markdown("✅ Pass")
                 else:
                     st.markdown("❌ Fail")
@@ -616,47 +649,69 @@ if uploaded_files:
                                             assay_type = "BCMA"
                                     
                                     # Calculate half-killing indices for each well column
-                                    for well_col_name_hl in valid_well_columns_for_assay:
-                                        if well_col_name_hl not in assay_display_df.columns:
-                                            continue
-                                        
-                                        try:
-                                            well_data_series_hl = pd.to_numeric(assay_display_df[well_col_name_hl], errors='coerce')
-                                            
-                                            if assay_type == "BCMA":
-                                                valid_values = well_data_series_hl[well_data_series_hl >= 0.4]
-                                            elif assay_type == "CD19":
-                                                valid_values = well_data_series_hl[well_data_series_hl >= 0.8]
-                                            else:
-                                                # Default/unknown assay type - skip highlighting
+                                    # Skip yellow highlighting for MED/Only samples (they're only used for assay status)
+                                    assay_name_str = str(assay_name_key).strip()
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+
+                                    if not is_med_only_sample:
+                                        for well_col_name_hl in valid_well_columns_for_assay:
+                                            if well_col_name_hl not in assay_display_df.columns:
                                                 continue
-                                                
-                                            if not valid_values.empty:
-                                                max_value = valid_values.max()
-                                                half_killing_target = max_value / 2
-                                                
-                                                # Find index of max value within the valid values (above threshold)
-                                                idx_max_value = valid_values.idxmax()
-                                                
-                                                # Only search for half-killing target AFTER the max value
-                                                data_after_max = well_data_series_hl.loc[idx_max_value:]
-                                                if len(data_after_max) > 1:  # Need at least one point after max
-                                                    data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-                                                    if not data_after_max.empty:
-                                                        idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
-                                                        half_killing_indices[well_col_name_hl] = idx_closest_to_target
-                                        except Exception:
-                                            continue  # Skip this column if there's an error
+
+                                            try:
+                                                well_data_series_hl = pd.to_numeric(assay_display_df[well_col_name_hl], errors='coerce')
+
+                                                if assay_type == "BCMA":
+                                                    valid_values = well_data_series_hl[well_data_series_hl >= 0.4]
+                                                elif assay_type == "CD19":
+                                                    valid_values = well_data_series_hl[well_data_series_hl >= 0.8]
+                                                else:
+                                                    # Default/unknown assay type - skip highlighting
+                                                    continue
+
+                                                if not valid_values.empty:
+                                                    max_value = valid_values.max()
+                                                    half_killing_target = max_value / 2
+
+                                                    # Find index of max value within the valid values (above threshold)
+                                                    idx_max_value = valid_values.idxmax()
+
+                                                    # Only search for half-killing target AFTER the max value
+                                                    data_after_max = well_data_series_hl.loc[idx_max_value:]
+                                                    if len(data_after_max) > 1:  # Need at least one point after max
+                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                        if not data_after_max.empty:
+                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                            half_killing_indices[well_col_name_hl] = idx_closest_to_target
+                                            except Exception:
+                                                continue  # Skip this column if there's an error
                                     
                                     # Compute max indices per well for additional highlighting
                                     max_indices = {}
+                                    # Check if this is a MED/Only sample for special highlighting
+                                    assay_name_str = str(assay_name_key).strip()
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+
                                     for well_col_name_max in valid_well_columns_for_assay:
                                         if well_col_name_max not in assay_display_df.columns:
                                             continue
                                         try:
                                             s_num = pd.to_numeric(assay_display_df[well_col_name_max], errors='coerce')
                                             if s_num.notna().any():
-                                                max_indices[well_col_name_max] = s_num.idxmax()
+                                                if is_med_only_sample and "Time (Hour)" in assay_display_df.columns:
+                                                    # For MED/Only samples, find local max before 8 hours
+                                                    time_series = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
+                                                    before_8h_mask = time_series <= 8
+                                                    data_before_8h = s_num[before_8h_mask]
+
+                                                    if not data_before_8h.empty:
+                                                        max_indices[well_col_name_max] = data_before_8h.idxmax()
+                                                    else:
+                                                        # Fallback to overall max if no data before 8h
+                                                        max_indices[well_col_name_max] = s_num.idxmax()
+                                                else:
+                                                    # For non-MED samples, use overall max
+                                                    max_indices[well_col_name_max] = s_num.idxmax()
                                         except Exception:
                                             continue
 
@@ -714,63 +769,68 @@ if uploaded_files:
                                     }
     
                                     # --- Half-Killing Time Calculation for each well in this assay_display_df ---
-                                    for well_col_name_calc in valid_well_columns_for_assay:
-                                        if well_col_name_calc not in assay_display_df.columns:
-                                            # This well was skipped during temp_well_data_for_df creation or doesn't exist
-                                            continue
-    
-                                        well_data_series = pd.to_numeric(assay_display_df[well_col_name_calc], errors='coerce')
-                                        killed_status = "No"  # Default status
+                                    # Skip MED/Only samples from half-killing time analysis (they're only used for assay status)
+                                    assay_name_str = str(assay_name_key).strip()
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+
+                                    if not is_med_only_sample:
+                                        for well_col_name_calc in valid_well_columns_for_assay:
+                                            if well_col_name_calc not in assay_display_df.columns:
+                                                # This well was skipped during temp_well_data_for_df creation or doesn't exist
+                                                continue
+
+                                            well_data_series = pd.to_numeric(assay_display_df[well_col_name_calc], errors='coerce')
+                                            killed_status = "No"  # Default status
                                         
-                                        # Determine assay type for this file
-                                        assay_type = "Error - test type can't be found in file name"
-                                        if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
-                                            if "cd19" in uploaded_file.name.lower():
-                                                assay_type = "CD19"
-                                            elif "bcma" in uploaded_file.name.lower():
-                                                assay_type = "BCMA"
-                                        
-                                        # NEW APPROACH: No longer looking for value "1" first
-                                        # Instead, directly apply assay-specific thresholds to entire dataset
-                                        try:
-                                            if assay_type == "BCMA":
-                                                # For BCMA: find values >= 0.4, get max, divide by 2
-                                                valid_values = well_data_series[well_data_series >= 0.4]
-                                                threshold_text = "0.4"
-                                            elif assay_type == "CD19":
-                                                # For CD19: find values >= 0.8, get max, divide by 2  
-                                                valid_values = well_data_series[well_data_series >= 0.8]
-                                                threshold_text = "0.8"
-                                            else:
-                                                # For unknown assay types, fall back to original 0.5 logic
-                                                # Find index where value is 1 (original approach)
-                                                indices_at_1 = well_data_series[well_data_series == 1].index
-                                                if not indices_at_1.empty:
-                                                    idx_at_1 = indices_at_1[0]
-                                                    well_data_after_1 = well_data_series.loc[idx_at_1:].iloc[1:]
-                                                    if not well_data_after_1.empty:
-                                                        idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
-                                                        closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                        closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
-                                                        time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
-                                                        half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
+                                            # Determine assay type for this file
+                                            assay_type = "Error - test type can't be found in file name"
+                                            if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+                                                if "cd19" in uploaded_file.name.lower():
+                                                    assay_type = "CD19"
+                                                elif "bcma" in uploaded_file.name.lower():
+                                                    assay_type = "BCMA"
+
+                                            # NEW APPROACH: No longer looking for value "1" first
+                                            # Instead, directly apply assay-specific thresholds to entire dataset
+                                            try:
+                                                if assay_type == "BCMA":
+                                                    # For BCMA: find values >= 0.4, get max, divide by 2
+                                                    valid_values = well_data_series[well_data_series >= 0.4]
+                                                    threshold_text = "0.4"
+                                                elif assay_type == "CD19":
+                                                    # For CD19: find values >= 0.8, get max, divide by 2
+                                                    valid_values = well_data_series[well_data_series >= 0.8]
+                                                    threshold_text = "0.8"
+                                                else:
+                                                    # For unknown assay types, fall back to original 0.5 logic
+                                                    # Find index where value is 1 (original approach)
+                                                    indices_at_1 = well_data_series[well_data_series == 1].index
+                                                    if not indices_at_1.empty:
+                                                        idx_at_1 = indices_at_1[0]
+                                                        well_data_after_1 = well_data_series.loc[idx_at_1:].iloc[1:]
+                                                        if not well_data_after_1.empty:
+                                                            idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
+                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+                                                            time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
+                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
+                                                        else:
+                                                            continue
                                                     else:
                                                         continue
-                                                else:
-                                                    continue
                                             
-                                            if assay_type in ["BCMA", "CD19"]:
-                                                if not valid_values.empty:
-                                                    # Find max value and calculate half-killing target
-                                                    max_value = valid_values.max()
-                                                    half_killing_target = max_value / 2
-                                                    
-                                                    # Find index of max value within the valid values (above threshold)
-                                                    idx_max_value = valid_values.idxmax()
-                                                    time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
-                                                    
-                                                    # Find time closest to half-killing target ONLY AFTER the max value
-                                                    data_after_max = well_data_series.loc[idx_max_value:]
+                                                if assay_type in ["BCMA", "CD19"]:
+                                                    if not valid_values.empty:
+                                                        # Find max value and calculate half-killing target
+                                                        max_value = valid_values.max()
+                                                        half_killing_target = max_value / 2
+
+                                                        # Find index of max value within the valid values (above threshold)
+                                                        idx_max_value = valid_values.idxmax()
+                                                        time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
+
+                                                        # Find time closest to half-killing target ONLY AFTER the max value
+                                                        data_after_max = well_data_series.loc[idx_max_value:]
                                                     if len(data_after_max) > 1:  # Need at least one point after max
                                                         data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
                                                         if not data_after_max.empty:
@@ -816,31 +876,31 @@ if uploaded_files:
                                                     st.caption(f"For {assay_name_key} - Well {well_col_name_calc}: No values found >= {threshold_text} for {assay_type} calculation.")
                                                     continue
                                                     
-                                        except (ValueError, KeyError, IndexError) as e:
-                                            st.warning(f"Error calculating half-killing time for well {well_col_name_calc}: {str(e)}")
-                                            continue
+                                            except (ValueError, KeyError, IndexError) as e:
+                                                st.warning(f"Error calculating half-killing time for well {well_col_name_calc}: {str(e)}")
+                                                continue
     
-                                        # Create summary data rows (moved outside the try block)
-                                        target_data_row = {
-                                            "Sample Name": assay_name_key,
-                                            "Treatment": treatment_group,
-                                            "Killed below 0.5": killed_status,
-                                            "Half-killing target (Hour)": closest_to_0_5_hour_val,
-                                            "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
-                                            "Half-killing time (Hour)": half_killing_time_calc
-                                        }
-                                        closest_to_half_target_data.append(target_data_row)
-                                        
-                                        summary_row = {
-                                            "Sample Name": assay_name_key,
-                                            "Treatment": treatment_group,
-                                            "Well ID": well_col_name_calc,
-                                            "Killed below 0.5": killed_status,
-                                            "Half-killing target (Hour)": closest_to_0_5_hour_val,
-                                            "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
-                                            "Half-killing time (Hour)": half_killing_time_calc
-                                        }
-                                        half_killing_summary_data.append(summary_row)
+                                            # Create summary data rows (moved outside the try block)
+                                            target_data_row = {
+                                                "Sample Name": assay_name_key,
+                                                "Treatment": treatment_group,
+                                                "Killed below 0.5": killed_status,
+                                                "Half-killing target (Hour)": closest_to_0_5_hour_val,
+                                                "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
+                                                "Half-killing time (Hour)": half_killing_time_calc
+                                            }
+                                            closest_to_half_target_data.append(target_data_row)
+
+                                            summary_row = {
+                                                "Sample Name": assay_name_key,
+                                                "Treatment": treatment_group,
+                                                "Well ID": well_col_name_calc,
+                                                "Killed below 0.5": killed_status,
+                                                "Half-killing target (Hour)": closest_to_0_5_hour_val,
+                                                "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
+                                                "Half-killing time (Hour)": half_killing_time_calc
+                                            }
+                                            half_killing_summary_data.append(summary_row)
                                     # --- End of Half-Killing Time Calculation ---
                                     st.markdown("---")
     
@@ -1021,6 +1081,19 @@ if uploaded_files:
         
         if all_closest_dfs:
             combined_closest_df = pd.concat(all_closest_dfs, ignore_index=True)
+
+            # Filter out MED/Only samples from combined results
+            if not combined_closest_df.empty and 'Sample Name' in combined_closest_df.columns:
+                try:
+                    med_only_mask = combined_closest_df['Sample Name'].apply(
+                        lambda x: str(x).strip().upper().startswith("MED") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
+                    )
+                    if med_only_mask.any():  # Only filter if there are MED/Only samples to filter
+                        combined_closest_df = combined_closest_df[~med_only_mask]
+                except Exception as e:
+                    # If filtering fails, continue without filtering (keep all data)
+                    st.warning(f"Warning: Could not filter MED/Only samples from combined results: {str(e)}")
+
             # Reorder columns to put file info first
             cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_closest_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
             combined_closest_df = combined_closest_df[cols]
@@ -1042,6 +1115,19 @@ if uploaded_files:
         
         if all_stats_dfs:
             combined_stats_df = pd.concat(all_stats_dfs, ignore_index=True)
+
+            # Filter out MED/Only samples from combined stats
+            if not combined_stats_df.empty and 'Sample Name' in combined_stats_df.columns:
+                try:
+                    med_only_mask = combined_stats_df['Sample Name'].apply(
+                        lambda x: str(x).strip().upper().startswith("MED") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
+                    )
+                    if med_only_mask.any():  # Only filter if there are MED/Only samples to filter
+                        combined_stats_df = combined_stats_df[~med_only_mask]
+                except Exception as e:
+                    # If filtering fails, continue without filtering (keep all data)
+                    st.warning(f"Warning: Could not filter MED/Only samples from combined stats: {str(e)}")
+
             # Reorder columns to put file info first
             cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_stats_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
             combined_stats_df = combined_stats_df[cols]
