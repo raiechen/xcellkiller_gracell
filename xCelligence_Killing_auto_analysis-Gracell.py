@@ -29,7 +29,10 @@ def determine_assay_status(extracted_treatment_data, main_df):
                 valid_well_columns_for_assay = [name for name in potential_column_names if name in main_df.columns]
 
                 if not valid_well_columns_for_assay:
-                    return "Fail" # Med sample with no valid 'Y (' columns is Fail.
+                    # No data columns found for this Med/Only sample
+                    # For Media samples, this is expected (they don't have cell data)
+                    # Skip and continue checking other Med/Only samples
+                    continue
 
                 # This Med sample determines the overall status.
                 for well_col_name in valid_well_columns_for_assay:
@@ -85,6 +88,8 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
         light_yellow_format = workbook.add_format({'bg_color': '#FFFFE0'})
         green_bold_format = workbook.add_format({'bg_color': '#90EE90', 'bold': True})
         honeydew_format = workbook.add_format({'bg_color': '#F0FFF0'})
+        red_bold_format = workbook.add_format({'bg_color': '#FFCCCC', 'bold': True, 'font_color': '#8B0000'})
+        light_red_format = workbook.add_format({'bg_color': '#FFE6E6'})
         
         for sheet_name, df in dfs_map.items():
             if df is not None and not df.empty: # Only write if DataFrame exists and is not empty
@@ -147,6 +152,28 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                         worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_yellow_format)
                                     else:
                                         worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, honeydew_format)
+                        
+                        # Apply red highlighting for cells below half of max
+                        if 'below_half_max_indices' in highlight_info:
+                            for well_col, below_idx in highlight_info['below_half_max_indices'].items():
+                                if well_col not in df.columns:
+                                    continue
+                                col_idx = df.columns.get_loc(well_col)
+                                row_idx = startrow + 1 + below_idx  # +1 for header
+                                
+                                # Highlight the well column cell
+                                cell_value = df.iloc[below_idx, col_idx]
+                                worksheet.write(row_idx, col_idx, cell_value, red_bold_format)
+                                
+                                # Highlight time columns for below half max row
+                                if 'Time (Hour)' in df.columns:
+                                    time_hour_col_idx = df.columns.get_loc('Time (Hour)')
+                                    current_time_hour = df.iloc[below_idx, time_hour_col_idx]
+                                    worksheet.write(row_idx, time_hour_col_idx, current_time_hour, light_red_format)
+                                if 'Time (hh:mm:ss)' in df.columns:
+                                    time_hhmmss_col_idx = df.columns.get_loc('Time (hh:mm:ss)')
+                                    current_time_hhmmss = df.iloc[below_idx, time_hhmmss_col_idx]
+                                    worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_red_format)
     
     processed_data = output.getvalue()
     return processed_data
@@ -177,7 +204,7 @@ def format_kill_summary(series):
 
 # Set the title of the Streamlit app
 st.markdown(
-    "<h2 style='text-align: left; color: black;'>Gracell xCELLigence Killing App beta v0.1 ⚔️</h2>",
+    "<h2 style='text-align: left; color: black;'>Gracell xCELLigence Killing App beta v0.2 ⚔️</h2>",
     unsafe_allow_html=True
 )
 
@@ -250,191 +277,97 @@ if uploaded_files:
                 # This case should ideally not be hit based on your feedback that the table is always expected.
                 st.warning(f"Could not find the '{header_text}' header in the first column of the '{sheet_name}' sheet to identify the main data table.")
             # --- End of Main Numerical Data Table Extraction and Display ---
-            # --- Sample Information Table Extraction (New) ---
+            
+            # --- Sample Information Table Extraction from Layout Tab (NEW METHOD) ---
             st.session_state.sample_info_df = None # Initialize/reset before attempting to load
+            st.session_state.extracted_treatment_data = {} # Initialize extracted data
             
-            # Parse sheet once to find the "ID" header row
-            temp_id_df = excel_file.parse(sheet_name, header=None)
-            id_header_row_index = -1
-            if not temp_id_df.empty:
-                # Search for "ID" in the third column (index 2, which is Column C)
-                for i, row_series in temp_id_df.iterrows():
-                    # Check if row_series has at least 3 elements (index 0, 1, 2)
-                    if len(row_series) > 2 and str(row_series.iloc[2]).strip().upper() == "ID": # Case-insensitive
-                        id_header_row_index = i
-                        break
-            
-            if id_header_row_index != -1:
-                # Re-read the sheet, this time with the correct header row for the ID table
-                st.session_state.sample_info_df = excel_file.parse(sheet_name, header=id_header_row_index)
-                
-                # Attempt to drop "Unnamed: 0" column if it exists, to prevent ArrowTypeError
-                if st.session_state.sample_info_df is not None and 'Unnamed: 0' in st.session_state.sample_info_df.columns:
-                    st.session_state.sample_info_df = st.session_state.sample_info_df.drop(columns=['Unnamed: 0'])
-                    # st.write("Dropped 'Unnamed: 0' column from Sample Information Table.") # Optional debug message
-
-                # Drop the first two rows
-                if st.session_state.sample_info_df is not None and len(st.session_state.sample_info_df) >= 2:
-                    st.session_state.sample_info_df = st.session_state.sample_info_df.iloc[2:].reset_index(drop=True)
-                    # st.write("Dropped the first two rows from Sample Information Table.") # Optional debug
-                elif st.session_state.sample_info_df is not None and len(st.session_state.sample_info_df) < 2:
-                    # If less than 2 rows, drop all rows to make it empty, or handle as per preference
-                    # For now, let's make it empty to avoid errors with subsequent logic expecting >=0 rows
-                    st.session_state.sample_info_df = st.session_state.sample_info_df.iloc[0:0]
-                    # st.write("Sample Information Table had less than 2 rows, now empty.") # Optional debug
-                
-                # Truncate sample_info_df at the third NaN in 'ID' column (before string conversion)
-                if st.session_state.sample_info_df is not None and 'ID' in st.session_state.sample_info_df.columns:
-                    nan_count = 0
-                    third_nan_iloc = -1
-                    for i in range(len(st.session_state.sample_info_df)):
-                        if pd.isna(st.session_state.sample_info_df['ID'].iloc[i]):
-                            nan_count += 1
-                            if nan_count == 3:
-                                third_nan_iloc = i
+            layout_sheet_name = "Layout"
+            if layout_sheet_name in excel_file.sheet_names:
+                try:
+                    # Read the Layout sheet with first row as header
+                    layout_df = excel_file.parse(layout_sheet_name, header=0)
+                    
+                    # Expected columns: Well, Cell, Number, Well Type, Treatment, Concentration, Unit
+                    # We need: Well (column A), Cell (column B), Treatment (column E)
+                    required_cols = ['Well', 'Cell', 'Treatment']
+                    
+                    if all(col in layout_df.columns for col in required_cols):
+                        # Truncate at first completely empty row (stops before legend/metadata section)
+                        first_empty_row = None
+                        for i in range(len(layout_df)):
+                            if layout_df.iloc[i].isna().all():
+                                first_empty_row = i
                                 break
-                    
-                    if third_nan_iloc != -1:
-                        st.session_state.sample_info_df = st.session_state.sample_info_df.iloc[:third_nan_iloc]
-                        # st.write(f"Sample Information Table truncated to {third_nan_iloc} rows (before 3rd NaN in 'ID').") # Optional debug
-
-                # General fix: Convert all 'object' dtype columns to string to prevent ArrowTypeError
-                if st.session_state.sample_info_df is not None:
-                    for col in st.session_state.sample_info_df.columns:
-                        if st.session_state.sample_info_df[col].dtype == 'object':
-                            st.session_state.sample_info_df[col] = st.session_state.sample_info_df[col].astype(str)
-                    # st.write("Converted all 'object' dtype columns in Sample Information Table to string.") # Optional debug
-
-                # Ensure 'Target' column exists by aliasing 'Cell' or 'cell'
-                if st.session_state.sample_info_df is not None:
-                    if "Target" not in st.session_state.sample_info_df.columns:
-                        for alt_name in ["Cell", "cell", "target"]:
-                            if alt_name in st.session_state.sample_info_df.columns:
-                                st.session_state.sample_info_df = st.session_state.sample_info_df.rename(columns={alt_name: "Target"})
-                                break
-
-                # Rename columns between "Treatments" and "Target"
-                if st.session_state.sample_info_df is not None:
-                    column_names = st.session_state.sample_info_df.columns.tolist()
-                    try:
-                        treatments_idx = column_names.index("Treatments")
-                        target_idx = column_names.index("Target")
-
-                        if treatments_idx < target_idx - 1: # Ensure there's at least one column between them
-                            rename_map = {}
-                            treatment_counter = 1
-                            for i in range(treatments_idx + 1, target_idx):
-                                old_name = column_names[i]
-                                new_name = f"Treatment{treatment_counter}"
-                                rename_map[old_name] = new_name
-                                treatment_counter += 1
+                        
+                        if first_empty_row is not None:
+                            layout_df = layout_df.iloc[:first_empty_row]
+                        
+                        # Convert columns to string and handle NaN values
+                        layout_df['Well'] = layout_df['Well'].astype(str).str.strip()
+                        layout_df['Cell'] = layout_df['Cell'].fillna('').astype(str).str.strip()
+                        layout_df['Treatment'] = layout_df['Treatment'].fillna('').astype(str).str.strip()
+                        
+                        # Filter out rows where Well is empty or 'nan'
+                        layout_df = layout_df[layout_df['Well'].str.upper() != 'NAN']
+                        layout_df = layout_df[layout_df['Well'] != '']
+                        
+                        # Create Input ID column based on Well ID
+                        # Format: Y (Well) - e.g., "Y (A1)", "Y (B2)", etc.
+                        layout_df['Input ID'] = "Y (" + layout_df['Well'] + ")"
+                        
+                        # Build the extracted_treatment_data structure
+                        # Structure: {treatment_group: {sample_name: [input_ids]}}
+                        # Sample name comes from Treatment column, Cell type is for reference
+                        extracted_info = {}
+                        
+                        # Group by Treatment (sample name) and Cell type
+                        for _, row in layout_df.iterrows():
+                            cell_type = row['Cell']
+                            treatment = row['Treatment']
+                            input_id = row['Input ID']
                             
-                            if rename_map:
-                                st.session_state.sample_info_df = st.session_state.sample_info_df.rename(columns=rename_map)
-                                # st.write("Renamed columns between 'Treatments' and 'Target'.") # Optional debug
-                    except ValueError:
-                        # "Treatments" or "Target" column not found, or other issue.
-                        # st.write("'Treatments' or 'Target' column not found, or no columns between them. Skipping renaming.") # Optional debug
-                        pass # Silently skip if columns aren't as expected for renaming
-
-                # Forward fill "Treatments" and "TreatmentX" columns
-                if st.session_state.sample_info_df is not None:
-                    cols_to_forward_fill = []
-                    if "Treatments" in st.session_state.sample_info_df.columns:
-                        cols_to_forward_fill.append("Treatments")
-                    
-                    # Add renamed "TreatmentX" columns
-                    for col in st.session_state.sample_info_df.columns:
-                        if col.startswith("Treatment") and col[-1].isdigit() and col != "Treatments":
-                            cols_to_forward_fill.append(col)
-                    
-                    # Ensure no duplicates if "Treatments" somehow matched the pattern (unlikely but safe)
-                    cols_to_forward_fill = sorted(list(set(cols_to_forward_fill)))
-
-                    # Create a copy of the DataFrame to avoid SettingWithCopyWarning
-                    if st.session_state.sample_info_df is not None:
-                        sample_info_df_copy = st.session_state.sample_info_df.copy()
+                            # Skip if both cell type and treatment are empty
+                            if (not cell_type or cell_type.lower() in ['nan', 'none', '']) and \
+                               (not treatment or treatment.lower() in ['nan', 'none', '']):
+                                continue
+                            
+                            # Use 'Treatments' as the main grouping key (for compatibility with existing code)
+                            if 'Treatments' not in extracted_info:
+                                extracted_info['Treatments'] = {}
+                            
+                            # Determine the sample name (key):
+                            # Priority: Use Treatment if available, otherwise fall back to Cell type
+                            # This handles cases where Treatment might be empty but Cell type (like "Media") is present
+                            if treatment and treatment.lower() not in ['nan', 'none', '']:
+                                sample_name = treatment
+                            else:
+                                sample_name = cell_type
+                            
+                            # Skip if sample name is still empty after fallback
+                            if not sample_name or sample_name.lower() in ['nan', 'none', '']:
+                                continue
+                            
+                            # Initialize the list for this sample if it doesn't exist
+                            if sample_name not in extracted_info['Treatments']:
+                                extracted_info['Treatments'][sample_name] = []
+                            
+                            # Add input ID if not already present
+                            if input_id not in extracted_info['Treatments'][sample_name]:
+                                extracted_info['Treatments'][sample_name].append(input_id)
                         
-                        for col_ff in cols_to_forward_fill:
-                            if col_ff in sample_info_df_copy.columns: # Ensure column still exists
-                                for i in range(len(sample_info_df_copy)):
-                                    # Ensure we don't try to write past the end of the DataFrame
-                                    if i + 2 >= len(sample_info_df_copy):
-                                        break
-
-                                    current_val_str = str(sample_info_df_copy.loc[i, col_ff]) # Ensure it's a string
-                                    
-                                    # More comprehensive check for empty/null values
-                                    is_actual_text = current_val_str.strip().lower() not in ['', 'nan', 'none', '<na>', 'null', 'undefined', 'n/a']
-                                    
-                                    if is_actual_text:
-                                        value_to_copy = current_val_str
-                                        sample_info_df_copy.loc[i + 1, col_ff] = value_to_copy
-                                        sample_info_df_copy.loc[i + 2, col_ff] = value_to_copy
-                                        # st.write(f"Forward filled '{value_to_copy}' in column '{col_ff}' from row {i}.") # Optional debug
-                                        break # Stop after finding and processing the first text in this column
+                        st.session_state.extracted_treatment_data = extracted_info
+                        st.session_state.sample_info_df = layout_df  # Store for reference if needed
                         
-                        # Assign the modified copy back to the session state
-                        st.session_state.sample_info_df = sample_info_df_copy
+                    else:
+                        missing_cols = [col for col in required_cols if col not in layout_df.columns]
+                        st.warning(f"Layout sheet is missing required columns: {', '.join(missing_cols)}")
                 
-                # Drop columns after "Target" column
-                if st.session_state.sample_info_df is not None:
-                    column_names = st.session_state.sample_info_df.columns.tolist()
-                    if "Target" in column_names:
-                        target_col_index = column_names.index("Target")
-                        cols_to_keep = column_names[:target_col_index + 1]
-                        st.session_state.sample_info_df = st.session_state.sample_info_df[cols_to_keep]
-                        # st.write("Dropped columns after 'Target' column in Sample Information Table.") # Optional debug
-                    # else: # Optional: handle if "Target" column is not found
-                        # st.write("'Target' column not found. No columns dropped by this rule.")
-
-                # Add "Input ID" column based on "ID" column
-                if st.session_state.sample_info_df is not None and 'ID' in st.session_state.sample_info_df.columns:
-                    # 'ID' column should already be string type from previous conversions
-                    st.session_state.sample_info_df['Input ID'] = "Y (" + st.session_state.sample_info_df['ID'] + ")"
-                    # st.write("Added 'Input ID' column.") # Optional debug
-
-                # Extract treatment information into a structured dictionary
-                if st.session_state.sample_info_df is not None:
-                    extracted_info = {}
-                    # Identify treatment-related columns
-                    treatment_cols_to_scan = []
-                    if "Treatments" in st.session_state.sample_info_df.columns:
-                        treatment_cols_to_scan.append("Treatments")
-                    
-                    # Add renamed "TreatmentX" columns
-                    for col in st.session_state.sample_info_df.columns:
-                        if col.startswith("Treatment") and col[-1].isdigit() and col != "Treatments":
-                            treatment_cols_to_scan.append(col)
-                    
-                    treatment_cols_to_scan = sorted(list(set(treatment_cols_to_scan))) # Unique and sorted
-
-                    for treat_col_name in treatment_cols_to_scan:
-                        if treat_col_name in st.session_state.sample_info_df.columns and \
-                            'Input ID' in st.session_state.sample_info_df.columns:
-                            
-                            column_specific_data = {}
-                            for index, row in st.session_state.sample_info_df.iterrows():
-                                # Validate column existence before access
-                                if treat_col_name not in row or 'Input ID' not in row:
-                                    continue
-                                        
-                                treatment_text = str(row[treat_col_name])
-                                input_id = str(row['Input ID'])
-
-                                # More comprehensive check for empty/null values
-                                is_valid_text = treatment_text.strip().lower() not in ['', 'nan', 'none', '<na>', 'null', 'undefined', 'n/a']
-                                
-                                if is_valid_text:
-                                    if treatment_text not in column_specific_data:
-                                        column_specific_data[treatment_text] = []
-                                    if input_id not in column_specific_data[treatment_text]: # Avoid duplicate Input IDs for the same text
-                                        column_specific_data[treatment_text].append(input_id)
-                            
-                            if column_specific_data: # Only add if there's data for this column
-                                extracted_info[treat_col_name] = column_specific_data
-                    
-                    st.session_state.extracted_treatment_data = extracted_info
+                except Exception as e:
+                    st.error(f"Error reading Layout sheet: {str(e)}")
+            else:
+                st.warning(f"Could not find '{layout_sheet_name}' sheet in the uploaded Excel file.")
+                    # Debug: Uncomment to view extracted treatment data structure
                     # if st.session_state.extracted_treatment_data:
                     #     st.write("Extracted Treatment Data:")
                     #     st.json(st.session_state.extracted_treatment_data)
@@ -600,9 +533,18 @@ if uploaded_files:
                                 valid_well_columns_for_assay = [name for name in potential_column_names if name in main_df_cols]
     
                                 if not valid_well_columns_for_assay:
-                                    st.warning(f"For Sample '{assay_name_key}' (Treatment '{treatment_group}'): None of the listed potential column names ({', '.join(potential_column_names) if potential_column_names else 'N/A'}) were found as columns in the Main Numerical Data Table. Skipping.")
-                                    st.markdown("---")
-                                    continue
+                                    # Check if this is a Media sample (no cell data columns expected)
+                                    assay_name_str = str(assay_name_key).strip()
+                                    is_media_sample = assay_name_str.upper().startswith("MED")
+                                    
+                                    if is_media_sample:
+                                        # Media samples don't have data columns - this is expected, skip silently
+                                        continue
+                                    else:
+                                        # Non-media sample with no data columns - this is an error
+                                        st.warning(f"For Sample '{assay_name_key}' (Treatment '{treatment_group}'): None of the listed potential column names ({', '.join(potential_column_names) if potential_column_names else 'N/A'}) were found as columns in the Main Numerical Data Table. Skipping.")
+                                        st.markdown("---")
+                                        continue
     
                                 # Prepare the DataFrame for display
                                 try:
@@ -634,8 +576,8 @@ if uploaded_files:
                                     table_sub_title = f"Sample: {assay_name_key} (Treatment: {treatment_group})"
                                     st.subheader(table_sub_title)
     
-                                    if len(valid_well_columns_for_assay) != 3:
-                                        st.warning(f"Expected 3 well columns for this sample, but found {len(valid_well_columns_for_assay)} valid well column(s) in the data: {', '.join(valid_well_columns_for_assay)}")
+                                    # Display replicate count info (informational only, not a restriction)
+                                    st.caption(f"Found {len(valid_well_columns_for_assay)} replicate(s) for this sample: {', '.join(valid_well_columns_for_assay)}")
                                     
                                     # First pass: collect half-killing time indices for highlighting
                                     half_killing_indices = {}  # Dictionary to store indices for each well column
@@ -692,6 +634,9 @@ if uploaded_files:
                                     assay_name_str = str(assay_name_key).strip()
                                     is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
 
+                                    # Dictionary to store indices where cell index drops below half of local max
+                                    below_half_max_indices = {}
+
                                     for well_col_name_max in valid_well_columns_for_assay:
                                         if well_col_name_max not in assay_display_df.columns:
                                             continue
@@ -705,7 +650,24 @@ if uploaded_files:
                                                     data_before_8h = s_num[before_8h_mask]
 
                                                     if not data_before_8h.empty:
-                                                        max_indices[well_col_name_max] = data_before_8h.idxmax()
+                                                        local_max_idx = data_before_8h.idxmax()
+                                                        max_indices[well_col_name_max] = local_max_idx
+                                                        
+                                                        # Find if/where it drops below half of local max
+                                                        local_max_value = data_before_8h.loc[local_max_idx]
+                                                        half_max_threshold = local_max_value / 2
+                                                        local_max_time = time_series.loc[local_max_idx]
+                                                        
+                                                        # Check data after local max time
+                                                        after_max_mask = time_series > local_max_time
+                                                        data_after_max = s_num[after_max_mask]
+                                                        
+                                                        if not data_after_max.empty:
+                                                            # Find first point where it drops below half
+                                                            below_half_mask = data_after_max < half_max_threshold
+                                                            if below_half_mask.any():
+                                                                first_below_half_idx = data_after_max[below_half_mask].index[0]
+                                                                below_half_max_indices[well_col_name_max] = first_below_half_idx
                                                     else:
                                                         # Fallback to overall max if no data before 8h
                                                         max_indices[well_col_name_max] = s_num.idxmax()
@@ -716,7 +678,7 @@ if uploaded_files:
                                             continue
 
                                     # Display dataframe with highlighting (half-kill and max values)
-                                    if half_killing_indices or max_indices:
+                                    if half_killing_indices or max_indices or below_half_max_indices:
                                         def highlight_special_cells(data):
                                             # Create a DataFrame of the same shape filled with empty strings
                                             highlight_df = pd.DataFrame('', index=data.index, columns=data.columns)
@@ -731,7 +693,7 @@ if uploaded_files:
                                                     if 'Time (hh:mm:ss)' in highlight_df.columns:
                                                         highlight_df.loc[target_idx, 'Time (hh:mm:ss)'] = 'background-color: lightyellow'
 
-                                            # Highlight max value for each well column
+                                            # Highlight max value for each well column (green)
                                             for well_col, max_idx in max_indices.items():
                                                 if well_col in highlight_df.columns and max_idx in highlight_df.index:
                                                     # If already highlighted (e.g., coincides), append style
@@ -748,6 +710,23 @@ if uploaded_files:
                                                         existing_ts = highlight_df.loc[max_idx, 'Time (hh:mm:ss)']
                                                         sep_ts = '; ' if existing_ts else ''
                                                         highlight_df.loc[max_idx, 'Time (hh:mm:ss)'] = f"{existing_ts}{sep_ts}background-color: honeydew"
+
+                                            # Highlight cells below half of local max (red) - for MED/Only samples
+                                            for well_col, below_idx in below_half_max_indices.items():
+                                                if well_col in highlight_df.columns and below_idx in highlight_df.index:
+                                                    # Red highlighting for failure case
+                                                    existing = highlight_df.loc[below_idx, well_col]
+                                                    sep = '; ' if existing else ''
+                                                    highlight_df.loc[below_idx, well_col] = f"{existing}{sep}background-color: #ffcccc; font-weight: bold; color: darkred"
+                                                    # Also highlight the time columns for that failure row
+                                                    if 'Time (Hour)' in highlight_df.columns:
+                                                        existing_th = highlight_df.loc[below_idx, 'Time (Hour)']
+                                                        sep_th = '; ' if existing_th else ''
+                                                        highlight_df.loc[below_idx, 'Time (Hour)'] = f"{existing_th}{sep_th}background-color: #ffe6e6"
+                                                    if 'Time (hh:mm:ss)' in highlight_df.columns:
+                                                        existing_ts = highlight_df.loc[below_idx, 'Time (hh:mm:ss)']
+                                                        sep_ts = '; ' if existing_ts else ''
+                                                        highlight_df.loc[below_idx, 'Time (hh:mm:ss)'] = f"{existing_ts}{sep_ts}background-color: #ffe6e6"
 
                                             return highlight_df
 
@@ -940,16 +919,17 @@ if uploaded_files:
                     if not closest_df.empty and "Half-killing time (Hour)" in closest_df.columns:
                         st.markdown("---")
                         st.header("Half-killing Time Statistics by Sample")
-                        st.write ("Valid sample: %CV <= 30% & Killed below 0.5 = Yes for all wells")
+                        st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells")
                         
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
                         closest_df["Half-killing time (Hour)"] = pd.to_numeric(closest_df["Half-killing time (Hour)"], errors='coerce')
                         
-                        # Group by 'Sample Name' and calculate mean and std
-                        stats_df = closest_df.groupby("Sample Name")["Half-killing time (Hour)"].agg(['mean', 'std']).reset_index()
+                        # Group by 'Sample Name' and calculate mean, std, and count
+                        stats_df = closest_df.groupby("Sample Name")["Half-killing time (Hour)"].agg(['mean', 'std', 'count']).reset_index()
                         stats_df.rename(columns={'mean': 'Average Half-killing time (Hour)',
-                                                 'std': 'Std Dev Half-killing time (Hour)'}, inplace=True)
+                                                 'std': 'Std Dev Half-killing time (Hour)',
+                                                 'count': 'Number of Replicates'}, inplace=True)
                         
                         # Calculate %CV
                         # Handle potential division by zero if mean is 0; result will be NaN or inf
@@ -1000,6 +980,8 @@ if uploaded_files:
                         desired_column_order = ["Sample Name"]
                         if "Sample (Valid/Invalid)" in stats_df.columns:
                             desired_column_order.append("Sample (Valid/Invalid)")
+                        if "Number of Replicates" in stats_df.columns:
+                            desired_column_order.append("Number of Replicates")
                         base_stat_cols = ["Average Half-killing time (Hour)", "Std Dev Half-killing time (Hour)", "%CV Half-killing time (Hour)"]
                         for bsc in base_stat_cols:
                             if bsc in stats_df.columns:
