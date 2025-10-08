@@ -159,7 +159,7 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                 if well_col not in df.columns:
                                     continue
                                 col_idx = df.columns.get_loc(well_col)
-                                row_idx = startrow + 1 + below_idx  # +1 for header
+                                row_idx = below_idx + 1  # +1 for header row
                                 
                                 # Highlight the well column cell
                                 cell_value = df.iloc[below_idx, col_idx]
@@ -744,7 +744,8 @@ if uploaded_files:
                                     # Collect highlighting data for this sample
                                     current_file_results['highlighting_data'][sample_sheet_name] = {
                                         'half_killing_indices': half_killing_indices.copy(),
-                                        'max_indices': max_indices.copy()
+                                        'max_indices': max_indices.copy(),
+                                        'below_half_max_indices': below_half_max_indices.copy()
                                     }
     
                                     # --- Half-Killing Time Calculation for each well in this assay_display_df ---
