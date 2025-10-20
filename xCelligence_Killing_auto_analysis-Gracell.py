@@ -1,3 +1,6 @@
+# App Version - Update this to change version throughout the app
+APP_VERSION = "0.2"
+
 # Import the necessary libraries
 import streamlit as st
 import pandas as pd
@@ -204,7 +207,7 @@ def format_kill_summary(series):
 
 # Set the title of the Streamlit app
 st.markdown(
-    "<h2 style='text-align: left; color: black;'>Gracell xCELLigence Killing App beta v0.2 ⚔️</h2>",
+    f"<h2 style='text-align: left; color: black;'>Gracell xCELLigence Killing App beta v{APP_VERSION} ⚔️</h2>",
     unsafe_allow_html=True
 )
 
@@ -1044,6 +1047,29 @@ if uploaded_files:
             })
         
         summary_df = pd.DataFrame(summary_data)
+        # Add version info to the summary DataFrame for export
+        summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
+        
+        # Add criteria information as additional rows in the summary
+        criteria_info = pd.DataFrame({
+            'App Version': ['', '', ''],
+            'File Name': ['ASSAY CRITERIA:', '1. Medium/only sample found in data', '2. Medium/only cell index does not drop below half of local max after 8 hours'],
+            'Assay Type': ['', '', ''],
+            'Assay Status': ['', '', ''],
+            'Has Data': ['', '', '']
+        })
+        
+        sample_criteria_info = pd.DataFrame({
+            'App Version': ['', '', ''],
+            'File Name': ['SAMPLE CRITERIA:', '1. %CV <= 30%', '2. Killed below half max cell index = Yes for all wells'],
+            'Assay Type': ['', '', ''],
+            'Assay Status': ['', '', ''],
+            'Has Data': ['', '', '']
+        })
+        
+        # Combine summary with criteria information
+        summary_df = pd.concat([summary_df, criteria_info, sample_criteria_info], ignore_index=True)
+        
         st.dataframe(summary_df)
         
         # Prepare combined data for export
