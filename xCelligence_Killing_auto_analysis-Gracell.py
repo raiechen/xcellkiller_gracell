@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.2"
+APP_VERSION = "0.3"
 
 # Import the necessary libraries
 import streamlit as st
@@ -104,6 +104,18 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                     safe_sheet_name = safe_sheet_name.replace(char, '_')
                 
                 df.to_excel(writer, index=False, sheet_name=safe_sheet_name)
+                
+                # Auto-adjust column widths for better readability
+                worksheet = writer.sheets[safe_sheet_name]
+                for idx, col in enumerate(df.columns):
+                    # Calculate the maximum length of the column content
+                    max_len = max(
+                        df[col].astype(str).map(len).max(),  # Max length in column data
+                        len(str(col))  # Length of column name
+                    )
+                    # Set column width with a reasonable limit (add padding and cap at 50)
+                    adjusted_width = min(max_len + 2, 50)
+                    worksheet.set_column(idx, idx, adjusted_width)
                 
                 # Apply highlighting if data is provided for this sheet
                 if highlighting_data and safe_sheet_name in highlighting_data:
@@ -1050,25 +1062,20 @@ if uploaded_files:
         # Add version info to the summary DataFrame for export
         summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
         
-        # Add criteria information as additional rows in the summary
-        criteria_info = pd.DataFrame({
-            'App Version': ['', '', ''],
-            'File Name': ['ASSAY CRITERIA:', '1. Medium/only sample found in data', '2. Medium/only cell index does not drop below half of local max after 8 hours'],
-            'Assay Type': ['', '', ''],
-            'Assay Status': ['', '', ''],
-            'Has Data': ['', '', '']
-        })
+        # Add criteria information as additional columns on the right side
+        # Create empty columns first
+        summary_df[''] = ''  # Spacer column
+        summary_df['ASSAY CRITERIA'] = ''
+        summary_df['  '] = ''  # Another spacer column
+        summary_df['SAMPLE CRITERIA'] = ''
         
-        sample_criteria_info = pd.DataFrame({
-            'App Version': ['', '', ''],
-            'File Name': ['SAMPLE CRITERIA:', '1. %CV <= 30%', '2. Killed below half max cell index = Yes for all wells'],
-            'Assay Type': ['', '', ''],
-            'Assay Status': ['', '', ''],
-            'Has Data': ['', '', '']
-        })
+        # Fill in the assay criteria - combine both criteria into single cells
+        assay_criteria_text = '1. Medium/only sample found in data\n2. Medium/only cell index does not drop below half of local max after 8 hours'
+        summary_df.loc[0, 'ASSAY CRITERIA'] = assay_criteria_text
         
-        # Combine summary with criteria information
-        summary_df = pd.concat([summary_df, criteria_info, sample_criteria_info], ignore_index=True)
+        # Fill in the sample criteria - combine both criteria into single cells
+        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells'
+        summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
         
         st.dataframe(summary_df)
         
@@ -1182,10 +1189,23 @@ if uploaded_files:
         # Download button for combined results
         if combined_data_to_export:
             excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
+            
+            # Generate output filename based on uploaded files
+            if len(st.session_state.all_files_results) == 1:
+                # Single file: use original name with _Rapp suffix
+                original_filename = list(st.session_state.all_files_results.keys())[0]
+                base_name = original_filename.replace('.xlsx', '').replace('.xls', '')
+                output_filename = f"{base_name}_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            else:
+                # Multiple files: use first file's name with _combined suffix
+                first_filename = list(st.session_state.all_files_results.keys())[0]
+                base_name = first_filename.replace('.xlsx', '').replace('.xls', '')
+                output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            
             st.download_button(
                 label="📥 Download Combined Results from All Files", 
                 data=excel_bytes_combined,
-                file_name=f"combined_results_{len(st.session_state.all_files_results)}_files_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                file_name=output_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
