@@ -94,6 +94,9 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
         red_bold_format = workbook.add_format({'bg_color': '#FFCCCC', 'bold': True, 'font_color': '#8B0000'})
         light_red_format = workbook.add_format({'bg_color': '#FFE6E6'})
         
+        # Define format for text wrapping (for criteria columns)
+        wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
+        
         for sheet_name, df in dfs_map.items():
             if df is not None and not df.empty: # Only write if DataFrame exists and is not empty
                 # Ensure sheet name is within Excel's 31-character limit
@@ -116,6 +119,21 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                     # Set column width with a reasonable limit (add padding and cap at 50)
                     adjusted_width = min(max_len + 2, 50)
                     worksheet.set_column(idx, idx, adjusted_width)
+                
+                # Apply text wrapping to criteria columns with newlines
+                if 'ASSAY CRITERIA' in df.columns or 'SAMPLE CRITERIA' in df.columns:
+                    for idx, col in enumerate(df.columns):
+                        if col in ['ASSAY CRITERIA', 'SAMPLE CRITERIA']:
+                            # Set wider column width for criteria columns
+                            worksheet.set_column(idx, idx, 60)
+                            # Apply text wrap format to cells with content in these columns
+                            for row_num in range(len(df)):
+                                cell_value = df.iloc[row_num, idx]
+                                if pd.notna(cell_value) and str(cell_value).strip():
+                                    worksheet.write(row_num + 1, idx, cell_value, wrap_format)
+                    
+                    # Set row height for the first data row (row 1, after header) to accommodate wrapped text
+                    worksheet.set_row(1, 45)  # Height in points (enough for 2-3 lines of text)
                 
                 # Apply highlighting if data is provided for this sheet
                 if highlighting_data and safe_sheet_name in highlighting_data:
