@@ -223,39 +223,39 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Add a file uploader widget for multiple files
-uploaded_files = st.file_uploader("Choose Excel files (.xlsx)", type=['xlsx'], accept_multiple_files=True)
+# Add a file uploader widget for single file
+uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=['xlsx'], accept_multiple_files=False)
 
 # Initialize session state for storing results from all files
 if 'all_files_results' not in st.session_state:
     st.session_state.all_files_results = {}
 
-# Check if files have been uploaded
-if uploaded_files:
+# Check if file has been uploaded
+if uploaded_file:
     
-    # Clear previous results when new files are uploaded
+    # Clear previous results when new file is uploaded
     st.session_state.all_files_results = {}
     
-    # Process each uploaded file
-    for file_index, uploaded_file in enumerate(uploaded_files):
-        
-        # Create a container for this file's results
-        with st.container():
-            st.markdown(f"## 📁 File {file_index + 1}: {uploaded_file.name}")
-            st.markdown("---")
-            
-            # Store current file results
-            current_file_results = {
-                'file_name': uploaded_file.name,
-                'assay_status': "Pending",
-                'assay_type': "Error - test type can't be found in file name",
-                'closest_df': None,
-                'stats_df': None,
-                'detailed_sample_data': [],
-                'highlighting_data': {}
-            }
+    # Process the uploaded file
+    file_index = 0
     
-                # Specific sheet name and header text
+    # Create a container for this file's results
+    with st.container():
+        st.markdown(f"## 📁 File {file_index + 1}: {uploaded_file.name}")
+        st.markdown("---")
+        
+        # Store current file results
+        current_file_results = {
+            'file_name': uploaded_file.name,
+            'assay_status': "Pending",
+            'assay_type': "Error - test type can't be found in file name",
+            'closest_df': None,
+            'stats_df': None,
+            'detailed_sample_data': [],
+            'highlighting_data': {}
+        }
+
+        # Specific sheet name and header text
         sheet_name = "Data Analysis - Curve"
         header_text = "Time (Hour)"
         custom_error_message = f"Error: Could not find '{sheet_name}' sheet or '{header_text}' header in the uploaded Excel file. Please check the file."
@@ -266,9 +266,8 @@ if uploaded_files:
         if sheet_name not in excel_file.sheet_names:
             st.error(custom_error_message)
             st.session_state.data_frame = None # Ensure no stale data
-            continue  # Skip to next file
         else:
-# --- Main Numerical Data Table Extraction and Display (NEW) ---
+            # --- Main Numerical Data Table Extraction and Display (NEW) ---
             st.session_state.main_data_df = None # Initialize/reset
             # Parse sheet once to find the "Time (Hour)" header row in the first column
             temp_main_df = excel_file.parse(sheet_name, header=None)
@@ -1044,10 +1043,10 @@ if uploaded_files:
             st.session_state.all_files_results[uploaded_file.name] = current_file_results
     # --- Combined Export Results Section for All Files ---
     st.markdown("---")
-    st.header("📊 Combined Results from All Files")
+    st.header("📊 Analysis Results Summary")
     
     if st.session_state.all_files_results:
-        # Display summary of all files
+        # Display summary of file
         st.subheader("File Processing Summary")
         summary_data = []
         for file_name, results in st.session_state.all_files_results.items():
@@ -1203,21 +1202,21 @@ if uploaded_files:
                 output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             
             st.download_button(
-                label="📥 Download Combined Results from All Files", 
+                label="📥 Download Analysis Results", 
                 data=excel_bytes_combined,
                 file_name=output_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.caption("No data available to export from any files.")
+            st.caption("No data available to export.")
     else:
-        st.info("No files have been processed yet. Please upload Excel files to see combined results.")
+        st.info("No file has been processed yet. Please upload an Excel file to see results.")
 
 # --- End of Combined Export Results Section ---
 else:
-    st.info("Please upload one or more Excel files (.xlsx) to begin analysis.")
+    st.info("Please upload an Excel file (.xlsx) to begin analysis.")
     
-    # Clear any previous results when no files are uploaded
+    # Clear any previous results when no file is uploaded
     if 'all_files_results' in st.session_state:
         st.session_state.all_files_results = {}
     
