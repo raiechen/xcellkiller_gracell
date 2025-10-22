@@ -135,6 +135,9 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                     # Set row height for the first data row (row 1, after header) to accommodate wrapped text
                     worksheet.set_row(1, 45)  # Height in points (enough for 2-3 lines of text)
                 
+                # Protect the worksheet to prevent modifications (lock all cells)
+                worksheet.protect()
+                
                 # Apply highlighting if data is provided for this sheet
                 if highlighting_data and safe_sheet_name in highlighting_data:
                     worksheet = writer.sheets[safe_sheet_name]
