@@ -273,7 +273,8 @@ if uploaded_file:
             'closest_df': None,
             'stats_df': None,
             'detailed_sample_data': [],
-            'highlighting_data': {}
+            'highlighting_data': {},
+            'audit_trail_df': None
         }
 
         # Specific sheet name and header text
@@ -1062,6 +1063,18 @@ if uploaded_file:
 
             # Store this file's results in session state
             st.session_state.all_files_results[uploaded_file.name] = current_file_results
+            
+            # Check for Audit Trail sheet and store it if present
+            if 'Audit Trail' in excel_file.sheet_names:
+                try:
+                    audit_trail_df = excel_file.parse('Audit Trail')
+                    current_file_results['audit_trail_df'] = audit_trail_df
+                except Exception as e:
+                    st.warning(f"Found 'Audit Trail' sheet but couldn't read it: {str(e)}")
+                    current_file_results['audit_trail_df'] = None
+            else:
+                current_file_results['audit_trail_df'] = None
+                
     # --- Combined Export Results Section for All Files ---
     st.markdown("---")
     st.header("📊 Analysis Results Summary")
@@ -1205,6 +1218,14 @@ if uploaded_file:
                     # Add highlighting data for this sheet
                     if sample_data['sheet_name'] in results['highlighting_data']:
                         combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
+        
+        # Add Audit Trail sheet if it exists in the uploaded file
+        for file_name, results in st.session_state.all_files_results.items():
+            if results.get('audit_trail_df') is not None:
+                # Only add Audit Trail from the first file that has it
+                if 'Audit_Trail' not in combined_data_to_export:
+                    combined_data_to_export['Audit_Trail'] = results['audit_trail_df']
+                break
         
         # Download button for combined results
         if combined_data_to_export:
