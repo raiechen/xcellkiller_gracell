@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 
 # Import the necessary libraries
 import streamlit as st
