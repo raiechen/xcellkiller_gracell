@@ -1,5 +1,5 @@
-# App Version - Update this to change version throughout the app
-APP_VERSION = "0.4"
+3# App Version - Update this to change version throughout the app
+APP_VERSION = "0.5"
 
 # Import the necessary libraries
 import streamlit as st
@@ -19,11 +19,25 @@ def determine_assay_status(extracted_treatment_data, main_df):
         return "Fail"
 
     for treatment_group, assays in extracted_treatment_data.items():
-        for assay_name_key, input_ids in assays.items():
+        for assay_name_key, assay_data in assays.items():
+            # Handle both old format (list) and new format (dict with 'input_ids' and 'source')
+            if isinstance(assay_data, dict):
+                input_ids = assay_data.get('input_ids', [])
+                source = assay_data.get('source', 'Treatment')
+            else:
+                # Backwards compatibility with old format (list of input_ids)
+                input_ids = assay_data
+                source = 'Treatment'
+
+            # CRITICAL: Only check samples from Treatment column for assay status
+            # Samples from Cell column should be ignored for assay validation
+            if source != 'Treatment':
+                continue
+
             # Ensure assay_name_key is treated as a string and detect medium/media samples
             assay_name_str = str(assay_name_key).strip()
-            # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
-            if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
+            # Treat names starting with 'MED' or 'CMM' or containing the word 'only' (case-insensitive) as medium/media samples
+            if assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
                 # First "Med" sample found, its status determines the overall assay status.
 
                 # Ensure input_ids are processed as strings and handle None
@@ -32,9 +46,9 @@ def determine_assay_status(extracted_treatment_data, main_df):
                 valid_well_columns_for_assay = [name for name in potential_column_names if name in main_df.columns]
 
                 if not valid_well_columns_for_assay:
-                    # No data columns found for this Med/Only sample
+                    # No data columns found for this Med/Only/CMM sample
                     # For Media samples, this is expected (they don't have cell data)
-                    # Skip and continue checking other Med/Only samples
+                    # Skip and continue checking other Med/Only/CMM samples
                     continue
 
                 # This Med sample determines the overall status.
@@ -353,44 +367,38 @@ if uploaded_file:
                         layout_df['Input ID'] = "Y (" + layout_df['Well'] + ")"
                         
                         # Build the extracted_treatment_data structure
-                        # Structure: {treatment_group: {sample_name: [input_ids]}}
+                        # Structure: {treatment_group: {sample_name: {'input_ids': [ids], 'source': 'Treatment'/'Cell'}}}
                         # Sample name comes from Treatment column, Cell type is for reference
+                        # We track the source to ensure assay status determination only uses Treatment column
                         extracted_info = {}
-                        
+
                         # Group by Treatment (sample name) and Cell type
                         for _, row in layout_df.iterrows():
                             cell_type = row['Cell']
                             treatment = row['Treatment']
                             input_id = row['Input ID']
-                            
-                            # Skip if both cell type and treatment are empty
-                            if (not cell_type or cell_type.lower() in ['nan', 'none', '']) and \
-                               (not treatment or treatment.lower() in ['nan', 'none', '']):
-                                continue
-                            
+
                             # Use 'Treatments' as the main grouping key (for compatibility with existing code)
                             if 'Treatments' not in extracted_info:
                                 extracted_info['Treatments'] = {}
-                            
-                            # Determine the sample name (key):
-                            # Priority: Use Treatment if available, otherwise fall back to Cell type
-                            # This handles cases where Treatment might be empty but Cell type (like "Media") is present
-                            if treatment and treatment.lower() not in ['nan', 'none', '']:
-                                sample_name = treatment
+
+                            # IMPORTANT: Only process rows with Treatment values
+                            # Treatment column is the source of truth for sample names
+                            # Skip rows where Treatment is empty/NaN (e.g., Media-only wells)
+                            if pd.notna(treatment) and str(treatment).strip() and str(treatment).strip().lower() not in ['nan', 'none', '']:
+                                sample_name = str(treatment).strip()
+                                source = 'Treatment'
                             else:
-                                sample_name = cell_type
-                            
-                            # Skip if sample name is still empty after fallback
-                            if not sample_name or sample_name.lower() in ['nan', 'none', '']:
+                                # Skip rows without Treatment values - they are not samples to analyze
                                 continue
-                            
-                            # Initialize the list for this sample if it doesn't exist
+
+                            # Initialize the dict for this sample if it doesn't exist
                             if sample_name not in extracted_info['Treatments']:
-                                extracted_info['Treatments'][sample_name] = []
-                            
+                                extracted_info['Treatments'][sample_name] = {'input_ids': [], 'source': source}
+
                             # Add input ID if not already present
-                            if input_id not in extracted_info['Treatments'][sample_name]:
-                                extracted_info['Treatments'][sample_name].append(input_id)
+                            if input_id not in extracted_info['Treatments'][sample_name]['input_ids']:
+                                extracted_info['Treatments'][sample_name]['input_ids'].append(input_id)
                         
                         st.session_state.extracted_treatment_data = extracted_info
                         st.session_state.sample_info_df = layout_df  # Store for reference if needed
@@ -460,10 +468,23 @@ if uploaded_file:
                     local_max_criteria_pass = False
                 else:
                     for treatment_group, assays in st.session_state.extracted_treatment_data.items():
-                        for assay_name_key, input_ids in assays.items():
+                        for assay_name_key, assay_data in assays.items():
+                            # Handle both old format (list) and new format (dict with 'input_ids' and 'source')
+                            if isinstance(assay_data, dict):
+                                input_ids = assay_data.get('input_ids', [])
+                                source = assay_data.get('source', 'Treatment')
+                            else:
+                                # Backwards compatibility with old format (list of input_ids)
+                                input_ids = assay_data
+                                source = 'Treatment'
+
+                            # CRITICAL: Only check samples from Treatment column for assay status
+                            if source != 'Treatment':
+                                continue
+
                             assay_name_str = str(assay_name_key).strip()
-                            # Treat names starting with 'MED' or containing the word 'only' (case-insensitive) as medium/media samples
-                            if assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
+                            # Treat names starting with 'MED' or 'CMM' or containing the word 'only' (case-insensitive) as medium/media samples
+                            if assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
                                 med_sample_found = True
 
                                 potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
@@ -521,17 +542,17 @@ if uploaded_file:
 
             # Create a styled checkbox for each criterion
             col1, col2 = st.columns([3, 1])
-            
+
             with col1:
-                st.markdown("1. Medium/only sample found in data")
+                st.markdown("1. Medium/only/CMM sample found in data")
             with col2:
                 if med_sample_found:
                     st.markdown("✅ Pass")
                 else:
                     st.markdown("❌ Fail")
-            
+
             with col1:
-                st.markdown("2. Medium/only cell index does not drop below half of local max (before 8h)")
+                st.markdown("2. Medium/only/CMM cell index does not drop below half of local max (before 8h)")
             with col2:
                 if local_max_criteria_pass:
                     st.markdown("✅ Pass")
@@ -559,8 +580,14 @@ if uploaded_file:
                         st.warning(f"Cannot generate detailed assay tables. The Main Numerical Data Table is missing required time column(s): {', '.join(missing_global_time_cols)}")
                     else:
                         for treatment_group, assays in st.session_state.extracted_treatment_data.items():
-                            for assay_name_key, input_ids in assays.items():
-                                
+                            for assay_name_key, assay_data in assays.items():
+                                # Handle both old format (list) and new format (dict with 'input_ids' and 'source')
+                                if isinstance(assay_data, dict):
+                                    input_ids = assay_data.get('input_ids', [])
+                                else:
+                                    # Backwards compatibility with old format (list of input_ids)
+                                    input_ids = assay_data
+
                                 # Use the raw input_ids directly as potential column names
                                 # Ensure they are strings and stripped of extra whitespace
                                 potential_column_names = [str(id_str).strip() for id_str in input_ids]
@@ -571,7 +598,7 @@ if uploaded_file:
                                 if not valid_well_columns_for_assay:
                                     # Check if this is a Media sample (no cell data columns expected)
                                     assay_name_str = str(assay_name_key).strip()
-                                    is_media_sample = assay_name_str.upper().startswith("MED")
+                                    is_media_sample = assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM")
                                     
                                     if is_media_sample:
                                         # Media samples don't have data columns - this is expected, skip silently
@@ -627,9 +654,9 @@ if uploaded_file:
                                             assay_type = "BCMA"
                                     
                                     # Calculate half-killing indices for each well column
-                                    # Skip yellow highlighting for MED/Only samples (they're only used for assay status)
+                                    # Skip yellow highlighting for MED/CMM/Only samples (they're only used for assay status)
                                     assay_name_str = str(assay_name_key).strip()
-                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
 
                                     if not is_med_only_sample:
                                         for well_col_name_hl in valid_well_columns_for_assay:
@@ -659,16 +686,19 @@ if uploaded_file:
                                                     if len(data_after_max) > 1:  # Need at least one point after max
                                                         data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
                                                         if not data_after_max.empty:
-                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
-                                                            half_killing_indices[well_col_name_hl] = idx_closest_to_target
+                                                            # IMPORTANT: Only highlight if cells actually DROP BELOW half-killing target
+                                                            # Don't highlight if they stay above it
+                                                            if (data_after_max < half_killing_target).any():
+                                                                idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                                half_killing_indices[well_col_name_hl] = idx_closest_to_target
                                             except Exception:
                                                 continue  # Skip this column if there's an error
                                     
                                     # Compute max indices per well for additional highlighting
                                     max_indices = {}
-                                    # Check if this is a MED/Only sample for special highlighting
+                                    # Check if this is a MED/CMM/Only sample for special highlighting
                                     assay_name_str = str(assay_name_key).strip()
-                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
 
                                     # Dictionary to store indices where cell index drops below half of local max
                                     below_half_max_indices = {}
@@ -680,7 +710,7 @@ if uploaded_file:
                                             s_num = pd.to_numeric(assay_display_df[well_col_name_max], errors='coerce')
                                             if s_num.notna().any():
                                                 if is_med_only_sample and "Time (Hour)" in assay_display_df.columns:
-                                                    # For MED/Only samples, find local max before 8 hours
+                                                    # For MED/Only/CMM samples, find local max before 8 hours
                                                     time_series = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
                                                     before_8h_mask = time_series <= 8
                                                     data_before_8h = s_num[before_8h_mask]
@@ -747,7 +777,7 @@ if uploaded_file:
                                                         sep_ts = '; ' if existing_ts else ''
                                                         highlight_df.loc[max_idx, 'Time (hh:mm:ss)'] = f"{existing_ts}{sep_ts}background-color: honeydew"
 
-                                            # Highlight cells below half of local max (red) - for MED/Only samples
+                                            # Highlight cells below half of local max (red) - for MED/Only/CMM samples
                                             for well_col, below_idx in below_half_max_indices.items():
                                                 if well_col in highlight_df.columns and below_idx in highlight_df.index:
                                                     # Red highlighting for failure case
@@ -785,9 +815,9 @@ if uploaded_file:
                                     }
     
                                     # --- Half-Killing Time Calculation for each well in this assay_display_df ---
-                                    # Skip MED/Only samples from half-killing time analysis (they're only used for assay status)
+                                    # Skip MED/CMM/Only samples from half-killing time analysis (they're only used for assay status)
                                     assay_name_str = str(assay_name_key).strip()
-                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
 
                                     if not is_med_only_sample:
                                         for well_col_name_calc in valid_well_columns_for_assay:
@@ -847,46 +877,55 @@ if uploaded_file:
 
                                                         # Find time closest to half-killing target ONLY AFTER the max value
                                                         data_after_max = well_data_series.loc[idx_max_value:]
-                                                    if len(data_after_max) > 1:  # Need at least one point after max
-                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-                                                        if not data_after_max.empty:
-                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
-                                                            
-                                                            # Get the time values
-                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
-                                                            
-                                                            # Half-killing time = time at half-killing target - time at max value
-                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                        if len(data_after_max) > 1:  # Need at least one point after max
+                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                            if not data_after_max.empty:
+                                                                idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+
+                                                                # Get the time values
+                                                                closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                                closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+
+                                                                # Half-killing time = time at half-killing target - time at max value
+                                                                half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                            else:
+                                                                # No data after max, can't calculate half-killing time
+                                                                continue
                                                         else:
                                                             # No data after max, can't calculate half-killing time
                                                             continue
-                                                    else:
-                                                        # No data after max, can't calculate half-killing time
-                                                        continue
                                                     
                                                     # CORRECTED LOGIC: Determine killed status based on assay type
-                                                    # BCMA: Check if cells grew ≥0.4, then see if they drop back below 0.5
-                                                    # CD19: Check if cells grew ≥0.8, then see if they drop back below 0.5
+                                                    # Check if cells drop below half of their max value (half-killing target)
                                                     if assay_type == "BCMA":
                                                         # Check if cells ever grow >= 0.4
                                                         above_threshold_values = well_data_series[well_data_series >= 0.4]
                                                         if not above_threshold_values.empty:
-                                                            # Find first time above 0.4
-                                                            first_above_threshold_idx = above_threshold_values.index[0]
-                                                            # Check if values drop back below 0.5 after growing above 0.4
-                                                            values_after_growth = well_data_series.loc[first_above_threshold_idx+1:]
-                                                            if not values_after_growth.empty and (values_after_growth < 0.5).any():
+                                                            # Calculate half-killing target (half of max value)
+                                                            max_val = above_threshold_values.max()
+                                                            half_max_threshold = max_val / 2
+
+                                                            # Find index of max value
+                                                            idx_max = above_threshold_values.idxmax()
+
+                                                            # Check if values drop below half of max after reaching max
+                                                            values_after_max = well_data_series.loc[idx_max+1:] if idx_max < len(well_data_series) - 1 else pd.Series(dtype=float)
+                                                            if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                     elif assay_type == "CD19":
                                                         # Check if cells ever grow >= 0.8
                                                         above_threshold_values = well_data_series[well_data_series >= 0.8]
                                                         if not above_threshold_values.empty:
-                                                            # Find first time above 0.8
-                                                            first_above_threshold_idx = above_threshold_values.index[0]
-                                                            # Check if values drop back below 0.5 after growing above 0.8
-                                                            values_after_growth = well_data_series.loc[first_above_threshold_idx+1:]
-                                                            if not values_after_growth.empty and (values_after_growth < 0.5).any():
+                                                            # Calculate half-killing target (half of max value)
+                                                            max_val = above_threshold_values.max()
+                                                            half_max_threshold = max_val / 2
+
+                                                            # Find index of max value
+                                                            idx_max = above_threshold_values.idxmax()
+
+                                                            # Check if values drop below half of max after reaching max
+                                                            values_after_max = well_data_series.loc[idx_max+1:] if idx_max < len(well_data_series) - 1 else pd.Series(dtype=float)
+                                                            if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                 else:
                                                     st.caption(f"For {assay_name_key} - Well {well_col_name_calc}: No values found >= {threshold_text} for {assay_type} calculation.")
@@ -961,12 +1000,33 @@ if uploaded_file:
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
                         closest_df["Half-killing time (Hour)"] = pd.to_numeric(closest_df["Half-killing time (Hour)"], errors='coerce')
-                        
-                        # Group by 'Sample Name' and calculate mean, std, and count
-                        stats_df = closest_df.groupby("Sample Name")["Half-killing time (Hour)"].agg(['mean', 'std', 'count']).reset_index()
+
+                        # Group by 'Sample Name' and calculate mean, std (NOT count - we'll add that separately)
+                        stats_df = closest_df.groupby("Sample Name")["Half-killing time (Hour)"].agg(['mean', 'std']).reset_index()
                         stats_df.rename(columns={'mean': 'Average Half-killing time (Hour)',
-                                                 'std': 'Std Dev Half-killing time (Hour)',
-                                                 'count': 'Number of Replicates'}, inplace=True)
+                                                 'std': 'Std Dev Half-killing time (Hour)'}, inplace=True)
+
+                        # Add actual replicate count from Layout sheet (extracted_treatment_data)
+                        # This shows how many wells were tested, not how many passed data quality checks
+                        actual_replicate_counts = {}
+                        if st.session_state.get('extracted_treatment_data'):
+                            for treatment_group, assays in st.session_state.extracted_treatment_data.items():
+                                for sample_name, assay_data in assays.items():
+                                    # Handle both old format (list) and new format (dict)
+                                    if isinstance(assay_data, dict):
+                                        input_ids = assay_data.get('input_ids', [])
+                                    else:
+                                        input_ids = assay_data
+
+                                    # Count the number of wells for this sample
+                                    actual_replicate_counts[sample_name] = len(input_ids)
+
+                        # Add the replicate count to stats_df
+                        stats_df['Number of Replicates'] = stats_df['Sample Name'].map(actual_replicate_counts)
+                        # If sample name not found in mapping, default to the number of data points we have
+                        stats_df['Number of Replicates'] = stats_df['Number of Replicates'].fillna(
+                            closest_df.groupby("Sample Name").size()
+                        ).astype(int)
                         
                         # Calculate %CV
                         # Handle potential division by zero if mean is 0; result will be NaN or inf
@@ -1012,7 +1072,22 @@ if uploaded_file:
                         else:
                             # If prerequisite columns are missing, default to "Invalid"
                             stats_df["Sample (Valid/Invalid)"] = "Invalid"
-                        
+
+                        # Set statistical columns to 'N/A' for Invalid samples
+                        if "Sample (Valid/Invalid)" in stats_df.columns:
+                            invalid_mask = stats_df["Sample (Valid/Invalid)"] == "Invalid"
+                            stats_columns_to_na = [
+                                "Average Half-killing time (Hour)",
+                                "Std Dev Half-killing time (Hour)",
+                                "%CV Half-killing time (Hour)",
+                                "%CV Pass/Fail"
+                            ]
+                            for col in stats_columns_to_na:
+                                if col in stats_df.columns:
+                                    # Convert to object type to avoid dtype warnings when setting 'N/A'
+                                    stats_df[col] = stats_df[col].astype(object)
+                                    stats_df.loc[invalid_mask, col] = "N/A"
+
                         # Reorder columns in stats_df to place new columns logically
                         desired_column_order = ["Sample Name"]
                         if "Sample (Valid/Invalid)" in stats_df.columns:
@@ -1103,7 +1178,7 @@ if uploaded_file:
         summary_df['SAMPLE CRITERIA'] = ''
         
         # Fill in the assay criteria - combine both criteria into single cells
-        assay_criteria_text = '1. Medium/only sample found in data\n2. Medium/only cell index does not drop below half of local max after 8 hours'
+        assay_criteria_text = '1. Medium/only/CMM sample found in data\n2. Medium/only/CMM cell index does not drop below half of local max after 8 hours'
         summary_df.loc[0, 'ASSAY CRITERIA'] = assay_criteria_text
         
         # Fill in the sample criteria - combine both criteria into single cells
@@ -1131,17 +1206,17 @@ if uploaded_file:
         if all_closest_dfs:
             combined_closest_df = pd.concat(all_closest_dfs, ignore_index=True)
 
-            # Filter out MED/Only samples from combined results
+            # Filter out MED/CMM/Only samples from combined results
             if not combined_closest_df.empty and 'Sample Name' in combined_closest_df.columns:
                 try:
                     med_only_mask = combined_closest_df['Sample Name'].apply(
-                        lambda x: str(x).strip().upper().startswith("MED") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
+                        lambda x: str(x).strip().upper().startswith("MED") or str(x).strip().upper().startswith("CMM") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
                     )
-                    if med_only_mask.any():  # Only filter if there are MED/Only samples to filter
+                    if med_only_mask.any():  # Only filter if there are MED/Only/CMM samples to filter
                         combined_closest_df = combined_closest_df[~med_only_mask]
                 except Exception as e:
                     # If filtering fails, continue without filtering (keep all data)
-                    st.warning(f"Warning: Could not filter MED/Only samples from combined results: {str(e)}")
+                    st.warning(f"Warning: Could not filter MED/Only/CMM samples from combined results: {str(e)}")
 
             # Reorder columns to put file info first
             cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_closest_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
@@ -1165,17 +1240,17 @@ if uploaded_file:
         if all_stats_dfs:
             combined_stats_df = pd.concat(all_stats_dfs, ignore_index=True)
 
-            # Filter out MED/Only samples from combined stats
+            # Filter out MED/CMM/Only samples from combined stats
             if not combined_stats_df.empty and 'Sample Name' in combined_stats_df.columns:
                 try:
                     med_only_mask = combined_stats_df['Sample Name'].apply(
-                        lambda x: str(x).strip().upper().startswith("MED") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
+                        lambda x: str(x).strip().upper().startswith("MED") or str(x).strip().upper().startswith("CMM") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
                     )
-                    if med_only_mask.any():  # Only filter if there are MED/Only samples to filter
+                    if med_only_mask.any():  # Only filter if there are MED/Only/CMM samples to filter
                         combined_stats_df = combined_stats_df[~med_only_mask]
                 except Exception as e:
                     # If filtering fails, continue without filtering (keep all data)
-                    st.warning(f"Warning: Could not filter MED/Only samples from combined stats: {str(e)}")
+                    st.warning(f"Warning: Could not filter MED/Only/CMM samples from combined stats: {str(e)}")
 
             # Reorder columns to put file info first
             cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_stats_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
