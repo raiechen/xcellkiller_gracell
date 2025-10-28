@@ -145,14 +145,11 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                 cell_value = df.iloc[row_num, idx]
                                 if pd.notna(cell_value) and str(cell_value).strip():
                                     worksheet.write(row_num + 1, idx, cell_value, wrap_format)
-                    
+
                     # Set row height for the first data row (row 1, after header) to accommodate wrapped text
                     worksheet.set_row(1, 45)  # Height in points (enough for 2-3 lines of text)
-                
-                # Protect the worksheet to prevent modifications (lock all cells)
-                worksheet.protect()
-                
-                # Apply highlighting if data is provided for this sheet
+
+                # Apply highlighting if data is provided for this sheet (MUST BE BEFORE worksheet.protect())
                 if highlighting_data and safe_sheet_name in highlighting_data:
                     worksheet = writer.sheets[safe_sheet_name]
                     highlight_info = highlighting_data[safe_sheet_name]
@@ -202,29 +199,42 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                         worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_yellow_format)
                                     else:
                                         worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, honeydew_format)
-                        
-                        # Apply red highlighting for cells below half of max
-                        if 'below_half_max_indices' in highlight_info:
-                            for well_col, below_idx in highlight_info['below_half_max_indices'].items():
-                                if well_col not in df.columns:
-                                    continue
-                                col_idx = df.columns.get_loc(well_col)
-                                row_idx = below_idx + 1  # +1 for header row
-                                
-                                # Highlight the well column cell
-                                cell_value = df.iloc[below_idx, col_idx]
-                                worksheet.write(row_idx, col_idx, cell_value, red_bold_format)
-                                
-                                # Highlight time columns for below half max row
-                                if 'Time (Hour)' in df.columns:
-                                    time_hour_col_idx = df.columns.get_loc('Time (Hour)')
-                                    current_time_hour = df.iloc[below_idx, time_hour_col_idx]
-                                    worksheet.write(row_idx, time_hour_col_idx, current_time_hour, light_red_format)
-                                if 'Time (hh:mm:ss)' in df.columns:
-                                    time_hhmmss_col_idx = df.columns.get_loc('Time (hh:mm:ss)')
-                                    current_time_hhmmss = df.iloc[below_idx, time_hhmmss_col_idx]
-                                    worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_red_format)
-    
+
+                    # Apply red highlighting for cells below half of max
+                    if 'below_half_max_indices' in highlight_info:
+                        for well_col, below_idx in highlight_info['below_half_max_indices'].items():
+                            if well_col not in df.columns:
+                                continue
+                            col_idx = df.columns.get_loc(well_col)
+                            row_idx = below_idx + 1  # +1 for header row
+
+                            # Highlight the well column cell
+                            cell_value = df.iloc[below_idx, col_idx]
+                            worksheet.write(row_idx, col_idx, cell_value, red_bold_format)
+
+                            # Highlight time columns for below half max row
+                            if 'Time (Hour)' in df.columns:
+                                time_hour_col_idx = df.columns.get_loc('Time (Hour)')
+                                current_time_hour = df.iloc[below_idx, time_hour_col_idx]
+                                worksheet.write(row_idx, time_hour_col_idx, current_time_hour, light_red_format)
+                            if 'Time (hh:mm:ss)' in df.columns:
+                                time_hhmmss_col_idx = df.columns.get_loc('Time (hh:mm:ss)')
+                                current_time_hhmmss = df.iloc[below_idx, time_hhmmss_col_idx]
+                                worksheet.write(row_idx, time_hhmmss_col_idx, current_time_hhmmss, light_red_format)
+
+                    # Apply red highlighting for low replicate counts (< 3) in stats tables
+                    if 'low_replicate_rows' in highlight_info and 'Number of Replicates' in df.columns:
+                        rep_col_idx = df.columns.get_loc('Number of Replicates')
+                        low_rep_rows = highlight_info['low_replicate_rows']
+                        for row_idx_data in low_rep_rows:
+                            row_idx_excel = row_idx_data + 1  # +1 for header row
+                            if row_idx_data < len(df):
+                                cell_value = df.iloc[row_idx_data, rep_col_idx]
+                                worksheet.write(row_idx_excel, rep_col_idx, cell_value, red_bold_format)
+
+                # Protect the worksheet AFTER all highlighting is applied (lock all cells to prevent modifications)
+                worksheet.protect()
+
     processed_data = output.getvalue()
     return processed_data
 
@@ -1123,10 +1133,39 @@ if uploaded_file:
                         final_columns_for_stats_df = [col for col in final_columns_for_stats_df if col in stats_df.columns]
                         stats_df = stats_df[final_columns_for_stats_df]
 
-                        st.dataframe(stats_df.astype(str))
-                        
+                        # Apply red highlighting for Number of Replicates < 3 in display
+                        def highlight_low_replicates(row):
+                            styles = [''] * len(row)
+                            if 'Number of Replicates' in stats_df.columns:
+                                rep_col_idx = stats_df.columns.get_loc('Number of Replicates')
+                                try:
+                                    # Convert to numeric for comparison (handle 'N/A' strings)
+                                    rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
+                                    if pd.notna(rep_value) and rep_value < 3:
+                                        styles[rep_col_idx] = 'background-color: #FFCCCC; color: #8B0000; font-weight: bold'
+                                except:
+                                    pass
+                            return styles
+
+                        st.dataframe(stats_df.astype(str).style.apply(highlight_low_replicates, axis=1))
+
                         # Store results for this file
                         current_file_results['stats_df'] = stats_df.copy()
+
+                        # Store highlighting info for stats table (for Excel export)
+                        stats_highlighting = {}
+                        if 'Number of Replicates' in stats_df.columns:
+                            low_replicate_rows = []
+                            for idx, row in stats_df.iterrows():
+                                try:
+                                    rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
+                                    if pd.notna(rep_value) and rep_value < 3:
+                                        low_replicate_rows.append(idx)
+                                except:
+                                    pass
+                            if low_replicate_rows:
+                                stats_highlighting['low_replicate_rows'] = low_replicate_rows
+                        current_file_results['stats_highlighting'] = stats_highlighting
                     # --- End of Statistics Table ---
                     
                     # Store closest_df for this file
@@ -1257,12 +1296,28 @@ if uploaded_file:
             combined_stats_df = combined_stats_df[cols]
             # Use shortened sheet name that fits Excel's 31-character limit
             combined_data_to_export["Combined_Half_Kill_Stats"] = combined_stats_df
-            
+
             with st.expander("Combined Half-killing Time Statistics by Sample", expanded=False):
                 st.dataframe(combined_stats_df)
-        
+
         # Add detailed sample data from all files
         combined_highlighting_data = {}
+
+        # Add stats highlighting data for Combined_Half_Kill_Stats sheet
+        if all_stats_dfs and not combined_stats_df.empty:
+            stats_low_replicate_rows = []
+            if 'Number of Replicates' in combined_stats_df.columns:
+                for idx, row in combined_stats_df.iterrows():
+                    try:
+                        rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
+                        if pd.notna(rep_value) and rep_value < 3:
+                            stats_low_replicate_rows.append(idx)
+                    except:
+                        pass
+                if stats_low_replicate_rows:
+                    combined_highlighting_data['Combined_Half_Kill_Stats'] = {
+                        'low_replicate_rows': stats_low_replicate_rows
+                    }
         used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
         sheet_counter = 1
         
