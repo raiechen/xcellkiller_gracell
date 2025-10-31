@@ -1,5 +1,5 @@
 3# App Version - Update this to change version throughout the app
-APP_VERSION = "0.5"
+APP_VERSION = "0.6"
 
 # Import the necessary libraries
 import streamlit as st
@@ -57,33 +57,34 @@ def determine_assay_status(extracted_treatment_data, main_df):
                         well_data_series = pd.to_numeric(main_df[well_col_name], errors='coerce')
                         time_series = pd.to_numeric(main_df["Time (Hour)"], errors='coerce')
 
-                        # NEW LOGIC: Find local max before 8 hours
-                        # Filter data for time <= 8 hours
-                        before_8h_mask = time_series <= 8
-                        data_before_8h = well_data_series[before_8h_mask]
-                        time_before_8h = time_series[before_8h_mask]
+                        # NEW LOGIC: Use global maximum across all time points
+                        if well_data_series.notna().sum() == 0:
+                            continue  # No valid numeric data
 
-                        if data_before_8h.empty:
-                            continue  # No data before 8 hours
+                        # Find global maximum
+                        global_max_value = well_data_series.max()
+                        global_max_idx = well_data_series.idxmax()
 
-                        # Find local maximum in data before 8 hours
-                        local_max_idx = data_before_8h.idxmax()
-                        local_max_value = data_before_8h.loc[local_max_idx]
-                        local_max_time = time_before_8h.loc[local_max_idx]
+                        # Calculate half-max threshold
+                        half_max_threshold = global_max_value / 2
 
-                        # Find data after the local max time
-                        after_max_mask = time_series > local_max_time
+                        # Find data after the global max time
+                        after_max_mask = time_series > time_series.loc[global_max_idx]
                         data_after_max = well_data_series[after_max_mask]
 
                         if data_after_max.empty:
                             continue  # No data after max time
 
-                        # Check if any value after max time drops below half of the local max
-                        half_max_threshold = local_max_value / 2
+                        # NEW CRITERIA: Check half-max recovery
                         drops_below_half = (data_after_max < half_max_threshold).any()
 
                         if drops_below_half:
-                            return "Fail"  # Cell index dropped below half of max
+                            # If it drops below half-max, check if it recovers at the last time point
+                            last_value = data_after_max.iloc[-1]
+                            if last_value <= half_max_threshold:
+                                return "Fail"  # Cell index dropped below half and didn't recover
+                            # If last value is above half-max, it recovered - continue checking other wells
+                        # If never drops below half-max, this well passes - continue checking other wells
 
                     except (ValueError, TypeError): # Keep it generic to catch any processing error for the column
                         return "Fail"
@@ -135,9 +136,9 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                     worksheet.set_column(idx, idx, adjusted_width)
                 
                 # Apply text wrapping to criteria columns with newlines
-                if 'ASSAY CRITERIA' in df.columns or 'SAMPLE CRITERIA' in df.columns:
+                if 'ASSAY CRITERIA' in df.columns or 'SAMPLE CRITERIA' in df.columns or 'NEGATIVE CONTROL CRITERIA' in df.columns:
                     for idx, col in enumerate(df.columns):
-                        if col in ['ASSAY CRITERIA', 'SAMPLE CRITERIA']:
+                        if col in ['ASSAY CRITERIA', 'SAMPLE CRITERIA', 'NEGATIVE CONTROL CRITERIA']:
                             # Set wider column width for criteria columns
                             worksheet.set_column(idx, idx, 60)
                             # Apply text wrap format to cells with content in these columns
@@ -147,7 +148,7 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                     worksheet.write(row_num + 1, idx, cell_value, wrap_format)
 
                     # Set row height for the first data row (row 1, after header) to accommodate wrapped text
-                    worksheet.set_row(1, 45)  # Height in points (enough for 2-3 lines of text)
+                    worksheet.set_row(1, 75)  # Height in points (enough for 5-6 lines of text)
 
                 # Apply highlighting if data is provided for this sheet (MUST BE BEFORE worksheet.protect())
                 if highlighting_data and safe_sheet_name in highlighting_data:
@@ -514,33 +515,28 @@ if uploaded_file:
                                                 # No valid numeric data in this column
                                                 continue
 
-                                            # NEW LOGIC: Find local max before 8 hours
-                                            # Filter data for time <= 8 hours
-                                            before_8h_mask = time_series <= 8
-                                            data_before_8h = well_data_series[before_8h_mask]
-                                            time_before_8h = time_series[before_8h_mask]
+                                            # NEW LOGIC: Use global maximum across all time points
+                                            global_max_value = well_data_series.max()
+                                            global_max_idx = well_data_series.idxmax()
 
-                                            if data_before_8h.empty:
-                                                continue  # No data before 8 hours
+                                            # Calculate half-max threshold
+                                            half_max_threshold = global_max_value / 2
 
-                                            # Find local maximum in data before 8 hours
-                                            local_max_idx = data_before_8h.idxmax()
-                                            local_max_value = data_before_8h.loc[local_max_idx]
-                                            local_max_time = time_before_8h.loc[local_max_idx]
-
-                                            # Find data after the local max time
-                                            after_max_mask = time_series > local_max_time
+                                            # Find data after the global max time
+                                            after_max_mask = time_series > time_series.loc[global_max_idx]
                                             data_after_max = well_data_series[after_max_mask]
 
                                             if data_after_max.empty:
                                                 continue  # No data after max time
 
-                                            # Check if any value after max time drops below half of the local max
-                                            half_max_threshold = local_max_value / 2
+                                            # NEW CRITERIA: Check half-max recovery
                                             drops_below_half = (data_after_max < half_max_threshold).any()
 
                                             if drops_below_half:
-                                                local_max_criteria_pass = False
+                                                # If it drops below half-max, check if it recovers at the last time point
+                                                last_value = data_after_max.iloc[-1]
+                                                if last_value <= half_max_threshold:
+                                                    local_max_criteria_pass = False  # Dropped below half and didn't recover
 
                                         except (ValueError, TypeError, KeyError, IndexError) as e:
                                             st.warning(f"Error processing column {well_col_name}: {str(e)}")
@@ -562,7 +558,7 @@ if uploaded_file:
                     st.markdown("❌ Fail")
 
             with col1:
-                st.markdown("2. Medium/only/CMM cell index does not drop below half of local max (before 8h)")
+                st.markdown("2. Medium/only/CMM either: never drops below half of max cell index OR recovers above half-max at last time point")
             with col2:
                 if local_max_criteria_pass:
                     st.markdown("✅ Pass")
@@ -1005,7 +1001,7 @@ if uploaded_file:
                     if not closest_df.empty and "Half-killing time (Hour)" in closest_df.columns:
                         st.markdown("---")
                         st.header("Half-killing Time Statistics by Sample")
-                        st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells")
+                        st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells & Average half-killing time <= 12 hours")
                         
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
@@ -1075,9 +1071,16 @@ if uploaded_file:
                                  stats_df["Killed below 0.5 Summary"] = "N/A"
 
 
-                        # Add "Sample (Valid/Invalid)" column
-                        if "Killed below 0.5 Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns:
-                            condition = (stats_df["Killed below 0.5 Summary"] == "All Yes") & (stats_df["%CV Pass/Fail"] == "Pass")
+                        # Add "Sample (Valid/Invalid)" column with new time criteria
+                        if "Killed below 0.5 Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns and "Average Half-killing time (Hour)" in stats_df.columns:
+                            # Ensure Average Half-killing time is numeric for comparison
+                            avg_time_numeric = pd.to_numeric(stats_df["Average Half-killing time (Hour)"], errors='coerce')
+                            # Valid if: All killed + %CV Pass + Average time <= 12 hours
+                            condition = (
+                                (stats_df["Killed below 0.5 Summary"] == "All Yes") &
+                                (stats_df["%CV Pass/Fail"] == "Pass") &
+                                (avg_time_numeric <= 12)
+                            )
                             stats_df["Sample (Valid/Invalid)"] = np.where(condition, "Valid", "Invalid")
                         else:
                             # If prerequisite columns are missing, default to "Invalid"
@@ -1212,17 +1215,17 @@ if uploaded_file:
         # Add criteria information as additional columns on the right side
         # Create empty columns first
         summary_df[''] = ''  # Spacer column
-        summary_df['ASSAY CRITERIA'] = ''
-        summary_df['  '] = ''  # Another spacer column
         summary_df['SAMPLE CRITERIA'] = ''
-        
-        # Fill in the assay criteria - combine both criteria into single cells
-        assay_criteria_text = '1. Medium/only/CMM sample found in data\n2. Medium/only/CMM cell index does not drop below half of local max after 8 hours'
-        summary_df.loc[0, 'ASSAY CRITERIA'] = assay_criteria_text
-        
+        summary_df['  '] = ''  # Another spacer column
+        summary_df['NEGATIVE CONTROL CRITERIA'] = ''
+
         # Fill in the sample criteria - combine both criteria into single cells
-        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells'
+        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours'
         summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
+
+        # Fill in the negative control criteria
+        negative_control_criteria_text = '1. Medium/only/CMM sample found in data\n2. Medium/only/CMM either:\n   - Never drops below half of max cell index\n   OR\n   - Recovers above half-max at last time point'
+        summary_df.loc[0, 'NEGATIVE CONTROL CRITERIA'] = negative_control_criteria_text
         
         st.dataframe(summary_df)
         
