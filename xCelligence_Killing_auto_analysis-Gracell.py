@@ -1,5 +1,5 @@
-3# App Version - Update this to change version throughout the app
-APP_VERSION = "0.6"
+# App Version - Update this to change version throughout the app
+APP_VERSION = "0.7"
 
 # Import the necessary libraries
 import streamlit as st
@@ -1001,7 +1001,7 @@ if uploaded_file:
                     if not closest_df.empty and "Half-killing time (Hour)" in closest_df.columns:
                         st.markdown("---")
                         st.header("Half-killing Time Statistics by Sample")
-                        st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells & Average half-killing time <= 12 hours")
+                        st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells & Average half-killing time <= 12 hours & Cell index does NOT recover above half-max at last time point")
                         
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
@@ -1015,9 +1015,21 @@ if uploaded_file:
                         # Add actual replicate count from Layout sheet (extracted_treatment_data)
                         # This shows how many wells were tested, not how many passed data quality checks
                         actual_replicate_counts = {}
-                        if st.session_state.get('extracted_treatment_data'):
+
+                        # NEW: Check for recovery at last time point for each sample
+                        # A sample is invalid if any well recovers above half-max at the last time point
+                        sample_recovery_status = {}  # Will store True if sample has recovery issue
+
+                        if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
                             for treatment_group, assays in st.session_state.extracted_treatment_data.items():
                                 for sample_name, assay_data in assays.items():
+                                    # Skip MED/CMM/Only samples from this check
+                                    sample_name_str = str(sample_name).strip()
+                                    is_med_only_sample = sample_name_str.upper().startswith("MED") or sample_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", sample_name_str, flags=re.IGNORECASE)
+
+                                    if is_med_only_sample:
+                                        continue
+
                                     # Handle both old format (list) and new format (dict)
                                     if isinstance(assay_data, dict):
                                         input_ids = assay_data.get('input_ids', [])
@@ -1026,6 +1038,64 @@ if uploaded_file:
 
                                     # Count the number of wells for this sample
                                     actual_replicate_counts[sample_name] = len(input_ids)
+
+                                    # Check each well for recovery at last time point
+                                    has_recovery = False
+                                    potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                    valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
+
+                                    for well_col_name in valid_well_columns:
+                                        try:
+                                            well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
+
+                                            # Skip if no valid data
+                                            if well_data_series.notna().sum() == 0:
+                                                continue
+
+                                            # Determine assay type for threshold
+                                            assay_type = "Error - test type can't be found in file name"
+                                            if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+                                                if "cd19" in uploaded_file.name.lower():
+                                                    assay_type = "CD19"
+                                                elif "bcma" in uploaded_file.name.lower():
+                                                    assay_type = "BCMA"
+
+                                            # Get valid values based on assay type
+                                            if assay_type == "BCMA":
+                                                valid_values = well_data_series[well_data_series >= 0.4]
+                                            elif assay_type == "CD19":
+                                                valid_values = well_data_series[well_data_series >= 0.8]
+                                            else:
+                                                continue  # Skip unknown assay types
+
+                                            if not valid_values.empty:
+                                                # Find max value and calculate half-max threshold
+                                                max_value = valid_values.max()
+                                                half_max_threshold = max_value / 2
+
+                                                # Find index of max value
+                                                idx_max_value = valid_values.idxmax()
+
+                                                # Get data after max point
+                                                data_after_max = well_data_series.loc[idx_max_value:]
+                                                if len(data_after_max) > 1:
+                                                    data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+
+                                                    if not data_after_max.empty:
+                                                        # Check if cells drop below half-max
+                                                        drops_below_half = (data_after_max < half_max_threshold).any()
+
+                                                        if drops_below_half:
+                                                            # Check if last value is above half-max (recovery)
+                                                            last_value = data_after_max.iloc[-1]
+                                                            if last_value > half_max_threshold:
+                                                                has_recovery = True
+                                                                break  # Found recovery, no need to check other wells
+                                        except Exception:
+                                            continue
+
+                                    # Store recovery status for this sample
+                                    sample_recovery_status[sample_name] = has_recovery
 
                         # Add the replicate count to stats_df
                         stats_df['Number of Replicates'] = stats_df['Sample Name'].map(actual_replicate_counts)
@@ -1071,35 +1141,26 @@ if uploaded_file:
                                  stats_df["Killed below 0.5 Summary"] = "N/A"
 
 
-                        # Add "Sample (Valid/Invalid)" column with new time criteria
+                        # Add "Sample (Valid/Invalid)" column with new time criteria AND recovery check
                         if "Killed below 0.5 Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns and "Average Half-killing time (Hour)" in stats_df.columns:
                             # Ensure Average Half-killing time is numeric for comparison
                             avg_time_numeric = pd.to_numeric(stats_df["Average Half-killing time (Hour)"], errors='coerce')
-                            # Valid if: All killed + %CV Pass + Average time <= 12 hours
+
+                            # Create recovery check series
+                            # Sample is invalid if it has recovery (True in sample_recovery_status)
+                            no_recovery_series = stats_df["Sample Name"].map(lambda x: not sample_recovery_status.get(x, False))
+
+                            # Valid if: All killed + %CV Pass + Average time <= 12 hours + No recovery at last time point
                             condition = (
                                 (stats_df["Killed below 0.5 Summary"] == "All Yes") &
                                 (stats_df["%CV Pass/Fail"] == "Pass") &
-                                (avg_time_numeric <= 12)
+                                (avg_time_numeric <= 12) &
+                                no_recovery_series
                             )
                             stats_df["Sample (Valid/Invalid)"] = np.where(condition, "Valid", "Invalid")
                         else:
                             # If prerequisite columns are missing, default to "Invalid"
                             stats_df["Sample (Valid/Invalid)"] = "Invalid"
-
-                        # Set statistical columns to 'N/A' for Invalid samples
-                        if "Sample (Valid/Invalid)" in stats_df.columns:
-                            invalid_mask = stats_df["Sample (Valid/Invalid)"] == "Invalid"
-                            stats_columns_to_na = [
-                                "Average Half-killing time (Hour)",
-                                "Std Dev Half-killing time (Hour)",
-                                "%CV Half-killing time (Hour)",
-                                "%CV Pass/Fail"
-                            ]
-                            for col in stats_columns_to_na:
-                                if col in stats_df.columns:
-                                    # Convert to object type to avoid dtype warnings when setting 'N/A'
-                                    stats_df[col] = stats_df[col].astype(object)
-                                    stats_df.loc[invalid_mask, col] = "N/A"
 
                         # Reorder columns in stats_df to place new columns logically
                         desired_column_order = ["Sample Name"]
@@ -1220,7 +1281,7 @@ if uploaded_file:
         summary_df['NEGATIVE CONTROL CRITERIA'] = ''
 
         # Fill in the sample criteria - combine both criteria into single cells
-        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours'
+        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
         summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
 
         # Fill in the negative control criteria
