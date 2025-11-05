@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.7"
+APP_VERSION = "0.8"
 
 # Import the necessary libraries
 import streamlit as st
@@ -131,8 +131,12 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                         df[col].astype(str).map(len).max(),  # Max length in column data
                         len(str(col))  # Length of column name
                     )
-                    # Set column width with a reasonable limit (add padding and cap at 50)
-                    adjusted_width = min(max_len + 2, 50)
+                    # Special handling for File Name column - allow wider width
+                    if col == 'File Name':
+                        adjusted_width = min(max_len + 2, 80)  # Allow up to 80 chars for file names
+                    else:
+                        # Set column width with a reasonable limit (add padding and cap at 50)
+                        adjusted_width = min(max_len + 2, 50)
                     worksheet.set_column(idx, idx, adjusted_width)
                 
                 # Apply text wrapping to criteria columns with newlines
