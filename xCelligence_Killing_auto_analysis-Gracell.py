@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.8"
+APP_VERSION = "0.9"
 
 # Import the necessary libraries
 import streamlit as st
@@ -1119,11 +1119,13 @@ if uploaded_file:
                         # Multiple identical data points will have std=0, mean=value. CV = 0.
                         stats_df.loc[stats_df["Std Dev Half-killing time (Hour)"].fillna(0) == 0, "%CV Half-killing time (Hour)"] = 0.0
                         
-                        # Round the numerical columns to 2 decimal places
+                        # Round the numerical columns to 2 decimal places and format as strings
                         cols_to_round = ["Average Half-killing time (Hour)", "Std Dev Half-killing time (Hour)", "%CV Half-killing time (Hour)"]
                         for col in cols_to_round:
                             if col in stats_df.columns: # Check if column exists before trying to round
-                                stats_df[col] = pd.to_numeric(stats_df[col], errors='coerce').round(2)
+                                # Convert to numeric, round to 2 decimals, then format as string with exactly 2 decimal places
+                                numeric_values = pd.to_numeric(stats_df[col], errors='coerce')
+                                stats_df[col] = numeric_values.apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
                         
                         # Add "%CV Pass/Fail" column
                         # Ensure "%CV Half-killing time (Hour)" is numeric for the comparison
@@ -1147,7 +1149,7 @@ if uploaded_file:
 
                         # Add "Sample (Valid/Invalid)" column with new time criteria AND recovery check
                         if "Killed below 0.5 Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns and "Average Half-killing time (Hour)" in stats_df.columns:
-                            # Ensure Average Half-killing time is numeric for comparison
+                            # Convert formatted string back to numeric for comparison
                             avg_time_numeric = pd.to_numeric(stats_df["Average Half-killing time (Hour)"], errors='coerce')
 
                             # Create recovery check series
