@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.9"
+APP_VERSION = "0.92"
 
 # Import the necessary libraries
 import streamlit as st
@@ -8,6 +8,7 @@ import io # Use io to handle the uploaded file bytes
 import numpy as np
 import datetime # For timestamping the export file
 import re # For parsing Input ID
+import plotly.express as px # For plotting
 
 # Function to determine overall assay status
 def determine_assay_status(extracted_treatment_data, main_df):
@@ -303,7 +304,8 @@ if uploaded_file:
             'stats_df': None,
             'detailed_sample_data': [],
             'highlighting_data': {},
-            'audit_trail_df': None
+            'audit_trail_df': None,
+            'print_report_df': None
         }
 
         # Specific sheet name and header text
@@ -577,6 +579,7 @@ if uploaded_file:
                 
                 half_killing_summary_data = [] # Initialize list for summary DataFrame
                 closest_to_half_target_data = [] # Initialize list for the new DataFrame
+                print_report_data = [] # Initialize list for Print Report
 
                 st.markdown("---")
                 with st.expander("Detailed Sample Data by Well", expanded=False):
@@ -870,6 +873,12 @@ if uploaded_file:
                                                             closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
                                                             time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
                                                             half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
+
+                                                            # Capture data for Print Report
+                                                            max_val_report = 1.0
+                                                            time_max_report = time_at_1_hour
+                                                            half_val_report = 0.5
+                                                            time_half_report = closest_to_0_5_hour_val
                                                         else:
                                                             continue
                                                     else:
@@ -898,6 +907,12 @@ if uploaded_file:
 
                                                                 # Half-killing time = time at half-killing target - time at max value
                                                                 half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+
+                                                                # Capture data for Print Report
+                                                                max_val_report = max_value
+                                                                time_max_report = time_at_max_hour
+                                                                half_val_report = half_killing_target
+                                                                time_half_report = closest_to_0_5_hour_val
                                                             else:
                                                                 # No data after max, can't calculate half-killing time
                                                                 continue
@@ -966,6 +981,17 @@ if uploaded_file:
                                                 "Half-killing time (Hour)": half_killing_time_calc
                                             }
                                             half_killing_summary_data.append(summary_row)
+
+                                            # Add to Print Report data
+                                            print_report_row = {
+                                                "Sample Name": assay_name_key,
+                                                "Target": assay_type,
+                                                "Time (Hour) at max cell index": time_max_report,
+                                                "Max cell index": max_val_report,
+                                                "Time (Hour) at half cell index": time_half_report,
+                                                "Half cell index": half_val_report
+                                            }
+                                            print_report_data.append(print_report_row)
                                     # --- End of Half-Killing Time Calculation ---
                                     st.markdown("---")
     
@@ -983,6 +1009,91 @@ if uploaded_file:
                 # --- Display the new DataFrame for "Half-Killing Time" values ---
                 if closest_to_half_target_data:
                     
+                    # --- Plotting Section ---
+                    st.markdown("---")
+                    st.header("Plot: Cell Index vs Time")
+                    
+                    # Prepare data for plotting
+                    plot_data = []
+                    
+                    # Iterate through extracted treatment data to gather plot data
+                    if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
+                         # Ensure time column exists
+                        if "Time (Hour)" in st.session_state.main_data_df.columns:
+                            time_values = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+                            
+                            for treatment_group, assays in st.session_state.extracted_treatment_data.items():
+                                for sample_name, assay_data in assays.items():
+                                    # Skip MED/CMM/Only samples from plot if desired, or keep them. 
+                                    # Usually plots include everything for visualization. Let's include them.
+                                    
+                                    # Handle both old format (list) and new format (dict)
+                                    if isinstance(assay_data, dict):
+                                        input_ids = assay_data.get('input_ids', [])
+                                    else:
+                                        input_ids = assay_data
+                                        
+                                    potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                    valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
+                                    
+                                    for well_col in valid_well_columns:
+                                        try:
+                                            well_data = pd.to_numeric(st.session_state.main_data_df[well_col], errors='coerce')
+                                            
+                                            # Create a DataFrame for this well's trace
+                                            # We need Time, Cell Index, and a Legend Label
+                                            # Legend Label format: "Well ID (Sample Name)" e.g., "B2 (Sample Name)"
+                                            # well_col is usually the Well ID (e.g., "B2" or "Y (B2)") depending on how it was parsed.
+                                            # Based on earlier code: layout_df['Input ID'] = "Y (" + layout_df['Well'] + ")"
+                                            # And potential_column_names comes from input_ids.
+                                            # So well_col might be "Y (B2)". 
+                                            # Let's try to extract just the well part if it looks like "Y (..)" or use it as is.
+                                            
+                                            well_label = well_col
+                                            match = re.search(r"Y \((.*?)\)", well_col)
+                                            if match:
+                                                well_label = match.group(1)
+                                            
+                                            legend_label = f"{well_label} ({sample_name})"
+                                            
+                                            # We can create a temporary DF or just append to list
+                                            # Appending to list is more efficient than repeated concat
+                                            for t, val in zip(time_values, well_data):
+                                                if pd.notna(t) and pd.notna(val):
+                                                    plot_data.append({
+                                                        "Time (Hour)": t,
+                                                        "Cell Index": val,
+                                                        "Legend": legend_label
+                                                    })
+                                        except Exception:
+                                            continue
+
+                    if plot_data:
+                        plot_df = pd.DataFrame(plot_data)
+                        
+                        # Create interactive line plot
+                        fig = px.line(
+                            plot_df, 
+                            x="Time (Hour)", 
+                            y="Cell Index", 
+                            color="Legend",
+                            title=f"Cell Index vs Time - {uploaded_file.name}",
+                            markers=True # Add markers as seen in the screenshot example (dots)
+                        )
+                        
+                        # Customize layout to match the requested style (cleaner)
+                        fig.update_traces(mode='lines+markers', marker=dict(size=3)) # Smaller markers
+                        fig.update_layout(
+                            xaxis_title="Time (hrs)",
+                            yaxis_title="Cell Index",
+                            legend_title_text="", # Remove legend title as per screenshot example style (usually just list)
+                            hovermode="x unified" # nice hover effect
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No valid data available for plotting.")
+
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
                     # Ensure correct column order for display, including the new column
@@ -1245,6 +1356,18 @@ if uploaded_file:
                     current_file_results['closest_df'] = None
                     current_file_results['stats_df'] = None
 
+                # --- Create and Store Print Report DataFrame ---
+                if print_report_data:
+                    print_report_df = pd.DataFrame(print_report_data)
+                    # Ensure column order
+                    pr_cols = ["Sample Name", "Target", "Time (Hour) at max cell index", "Max cell index", "Time (Hour) at half cell index", "Half cell index"]
+                    # Filter for existing columns
+                    pr_cols = [c for c in pr_cols if c in print_report_df.columns]
+                    print_report_df = print_report_df[pr_cols]
+                    current_file_results['print_report_df'] = print_report_df.copy()
+                else:
+                    current_file_results['print_report_df'] = None
+
             # Store this file's results in session state
             st.session_state.all_files_results[uploaded_file.name] = current_file_results
             
@@ -1369,6 +1492,17 @@ if uploaded_file:
 
             with st.expander("Combined Half-killing Time Statistics by Sample", expanded=False):
                 st.dataframe(combined_stats_df)
+
+        # Combine all print_report_df data
+        all_print_report_dfs = []
+        for file_name, results in st.session_state.all_files_results.items():
+            if results.get('print_report_df') is not None:
+                temp_df = results['print_report_df'].copy()
+                all_print_report_dfs.append(temp_df)
+        
+        if all_print_report_dfs:
+            combined_print_report_df = pd.concat(all_print_report_dfs, ignore_index=True)
+            combined_data_to_export["Print Report"] = combined_print_report_df
 
         # Add detailed sample data from all files
         combined_highlighting_data = {}
