@@ -9,7 +9,7 @@ This application automates the analysis of xCELLigence real-time cell analysis (
 ## Features
 
 - **Automated Assay Validation**: Validates assay quality based on medium/negative control sample performance
-- **Raw Data Validation**: Automatically detects and rejects "Lonza method" normalized data (where all values are 1.0)
+- **Raw Data Validation**: Automatically detects and rejects "Lonza method" normalized data (where Column A contains "Normalized")
 - **Half-Killing Time Calculation**: Calculates time to reach half-maximum cell index for each well
 - **Statistical Analysis**: Computes mean, standard deviation, and coefficient of variation (%CV) for samples
 - **Sample Quality Assessment**: Determines sample validity based on multiple criteria
@@ -64,7 +64,7 @@ The application expects Excel files (.xlsx) with the following structure:
    - Use "BCMA" in filename for BCMA assays
 
 4. **Data Format**: Must be "Gracell method" raw data.
-   - "Lonza method" normalized data (where all data columns contain the value 1.0) will be rejected.
+   - "Lonza method" normalized data (where Column A contains "Normalized") will be rejected.
 
 ### Analysis Workflow
 
@@ -124,7 +124,7 @@ The exported Excel file contains multiple sheets:
 
 **Changes**:
 - **New Feature**: Added validation to reject "Lonza method" normalized data files.
-  - Files where all data columns contain the value 1.0 (normalized) will trigger an error and stop processing.
+  - Files where Column A contains the string "Normalized" (case-insensitive) will trigger an error and stop processing.
   - Ensures only raw data is analyzed.
 
 ### Version 0.92
