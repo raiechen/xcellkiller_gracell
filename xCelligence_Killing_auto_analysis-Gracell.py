@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.92"
+APP_VERSION = "0.93"
 
 # Import the necessary libraries
 import streamlit as st
@@ -337,6 +337,45 @@ if uploaded_file:
                 # Re-read the sheet, this time with the correct header row for the main data table
                 st.session_state.main_data_df = excel_file.parse(sheet_name, header=main_data_header_row_index)
                 
+                # --- NEW: Check for "Lonza method" normalized data ---
+                # Lonza data has 1.0 in all data columns (normalized). Gracell raw data does not.
+                # We check if ALL numeric data columns (excluding Time) contain the value 1.0.
+                
+                is_lonza_format = False
+                numeric_data_cols = []
+                
+                # Identify numeric data columns (exclude Time columns)
+                for col in st.session_state.main_data_df.columns:
+                    if col not in ["Time (Hour)", "Time (hh:mm:ss)"]:
+                        # Check if column is numeric
+                        if pd.api.types.is_numeric_dtype(st.session_state.main_data_df[col]):
+                            numeric_data_cols.append(col)
+                
+                if numeric_data_cols:
+                    # Check if ALL numeric data columns contain the value 1.0
+                    # We use a threshold of "almost all" or "all" to be safe, but user said "every single column"
+                    # Let's check if they ALL have at least one 1.0 value, or if the entire column is 1.0?
+                    # User said: "every single column in cell index has 1 (normalized)"
+                    # My inspection showed that in the Lonza file, every data column HAS the value 1.0 (usually at the start or normalization point).
+                    # In the Raw file, NO data columns had 1.0.
+                    # So the criteria: If ALL numeric data columns contain the value 1.0, it's Lonza.
+                    
+                    cols_with_one = 0
+                    for col in numeric_data_cols:
+                        # Check if 1.0 exists in the column (handling float precision if needed, but usually exact 1.0 for normalization)
+                        if (st.session_state.main_data_df[col] == 1.0).any():
+                            cols_with_one += 1
+                    
+                    # If all data columns have 1.0, it's likely Lonza normalized data
+                    if cols_with_one == len(numeric_data_cols) and len(numeric_data_cols) > 0:
+                        is_lonza_format = True
+                
+                if is_lonza_format:
+                    st.error("Error: This appears to be 'Lonza method' normalized data (all columns contain value 1.0). Please upload 'Gracell method' raw data.")
+                    st.session_state.main_data_df = None # Clear data to prevent further processing
+                    st.stop() # Stop execution immediately
+                # --- End of Lonza Check ---
+
                 # # Display the main data table
                 # st.subheader("Main Numerical Data Table")
                 # st.dataframe(st.session_state.main_data_df)
