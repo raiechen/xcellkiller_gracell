@@ -1,1 +1,234 @@
-# xcellkiller_gracell
+# Gracell xCELLigence Killing Analysis Application
+
+A Streamlit-based application for analyzing xCELLigence killing assay data from Gracell experiments.
+
+## Overview
+
+This application automates the analysis of xCELLigence real-time cell analysis (RTCA) data for cytotoxicity assays. It processes Excel files containing cell viability data and generates comprehensive reports including statistical analysis, half-killing time calculations, and assay validation.
+
+## Features
+
+- **Automated Assay Validation**: Validates assay quality based on medium/negative control sample performance
+- **Raw Data Validation**: Automatically detects and rejects "Lonza method" normalized data (where all values are 1.0)
+- **Half-Killing Time Calculation**: Calculates time to reach half-maximum cell index for each well
+- **Statistical Analysis**: Computes mean, standard deviation, and coefficient of variation (%CV) for samples
+- **Sample Quality Assessment**: Determines sample validity based on multiple criteria
+- **Multi-Assay Type Support**: Handles both CD19 and BCMA assay types with specific thresholds
+- **Interactive Data Visualization**: Color-coded highlighting for key data points
+- **Comprehensive Excel Reports**: Multi-sheet Excel export with formatting and highlighting
+- **Print Report**: Dedicated tab for streamlined reporting of key metrics
+- **Batch Processing**: Supports analysis of individual files
+
+## System Requirements
+
+- Python 3.7 or higher
+- Dependencies listed in `requirements.txt`
+
+## Installation
+
+1. Clone or download this repository to your local machine
+
+2. Install required dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+### Running the Application
+
+Start the Streamlit application:
+```bash
+streamlit run xCelligence_Killing_auto_analysis-Gracell.py
+```
+
+The application will open in your default web browser.
+
+### Input File Requirements
+
+The application expects Excel files (.xlsx) with the following structure:
+
+1. **Layout Sheet**: Contains well information with columns:
+   - Well (e.g., A1, B2)
+   - Cell (cell type)
+   - Treatment (sample name)
+   - Other metadata columns
+
+2. **Data Analysis - Curve Sheet**: Contains time-series data with:
+   - "Time (Hour)" column
+   - "Time (hh:mm:ss)" column
+   - Well data columns (e.g., "Y (A1)", "Y (B2)")
+
+3. **File Naming Convention**: Include assay type in filename:
+   - Use "CD19" in filename for CD19 assays
+   - Use "BCMA" in filename for BCMA assays
+
+4. **Data Format**: Must be "Gracell method" raw data.
+   - "Lonza method" normalized data (where all data columns contain the value 1.0) will be rejected.
+
+### Analysis Workflow
+
+1. **Upload File**: Click "Choose an Excel file" and select your .xlsx file
+2. **Review Assay Status**: Check if assay passed validation criteria
+3. **Examine Sample Data**: Expand "Detailed Sample Data by Well" to see individual well analysis
+4. **Review Statistics**: Check the summary tables for half-killing times and sample validity
+5. **Download Results**: Click "📥 Download Analysis Results" to export Excel report
+
+## Validation Criteria
+
+### Assay Status Criteria (Negative Controls)
+
+An assay **PASSES** if:
+1. Medium/only/CMM sample is found in data
+2. Medium/only/CMM cells either:
+   - Never drop below half of maximum cell index, OR
+   - Recover above half-max at the last time point
+
+### Sample Validity Criteria
+
+A sample is **VALID** if ALL of the following are met:
+1. %CV ≤ 30%
+2. All wells are killed (drop below half of maximum cell index)
+3. Average half-killing time ≤ 12 hours
+4. Cell index does NOT recover above half-max at the last time point
+
+### Assay-Specific Thresholds
+
+- **BCMA Assays**: Uses cell index values ≥ 0.4 for calculations
+- **CD19 Assays**: Uses cell index values ≥ 0.8 for calculations
+
+## Output Files
+
+The exported Excel file contains multiple sheets:
+
+1. **File_Summary**: Overview of processed files with assay status and criteria
+2. **Combined_Half_Kill_Time**: Combined half-killing time data from all samples
+3. **Combined_Half_Kill_Stats**: Statistical summary with validity assessment
+4. **Individual Sample Sheets**: Detailed time-series data for each sample
+5. **Print Report**: Summary of key metrics for printing (Sample Name, Target, Max/Half Cell Index & Time)
+6. **Audit_Trail**: Original audit trail from input file (if present)
+
+### Color Coding in Excel Export
+
+- **Yellow**: Half-killing time point (closest to half-max threshold)
+- **Green**: Maximum cell index value
+- **Light backgrounds**: Corresponding time values for highlighted cells
+- **Red**:
+  - Cells that drop below half-max (for medium controls)
+  - Replicate counts < 3 (data quality warning)
+
+## Version History
+
+### Version 0.93 (Current)
+**Release Date**: 2025-11-24
+
+**Changes**:
+- **New Feature**: Added validation to reject "Lonza method" normalized data files.
+  - Files where all data columns contain the value 1.0 (normalized) will trigger an error and stop processing.
+  - Ensures only raw data is analyzed.
+
+### Version 0.92
+**Release Date**: 2025-11-19
+
+**Changes**:
+- Added "Print Report" tab to Excel export
+  - Includes Sample Name, Target, Time at max/half cell index, and Max/Half cell index values
+- Added Interactive Plotting
+  - "Cell Index vs Time" plot displayed in the app
+  - Custom legend showing "Well ID (Sample Name)"
+- Updated dependencies to include `plotly`
+
+### Version 0.9
+**Release Date**: 2025-11-12
+
+**Changes**:
+- Fixed decimal point display formatting bug
+  - Statistical columns (Average Half-killing time, Std Dev, %CV) now consistently display exactly 2 decimal places
+  - Improved numerical formatting to prevent floating point display inconsistencies
+  - Enhanced data presentation in exported Excel reports
+
+### Version 0.8
+**Release Date**: 2025-11-05
+
+**Changes**:
+- Fixed File Name column width in Excel export (File_Summary tab)
+  - Increased maximum column width from 50 to 80 characters for File Name column
+  - Ensures long filenames are fully visible in exported reports
+
+### Version 0.7
+**Changes**:
+- Previous stable release
+- Core functionality for half-killing time analysis
+- Sample validity assessment with recovery criteria
+- Multi-assay type support (CD19/BCMA)
+
+## Key Functions
+
+### `determine_assay_status()`
+Validates assay quality based on medium sample performance using half-max recovery criteria.
+
+### `dfs_to_excel_bytes()`
+Converts DataFrames to formatted Excel file with:
+- Auto-adjusted column widths
+- Cell highlighting for key data points
+- Text wrapping for criteria columns
+- Worksheet protection
+
+### `format_kill_summary()`
+Formats kill status summaries for statistical reporting (e.g., "All Yes", "3 Yes, 2 No").
+
+## Data Flow
+
+1. **File Upload** → Parse Excel sheets (Layout + Data Analysis - Curve)
+2. **Sample Information Extraction** → Build treatment-to-well mapping
+3. **Assay Validation** → Check medium/negative control performance
+4. **Half-Killing Time Calculation** → Calculate for each well using assay-specific thresholds
+5. **Statistical Analysis** → Compute mean, std dev, %CV per sample
+6. **Validity Assessment** → Apply multi-criteria validation rules
+7. **Report Generation** → Export multi-sheet Excel with formatting
+
+## Troubleshooting
+
+### Common Issues
+
+**Error: Could not find 'Data Analysis - Curve' sheet**
+- Verify your Excel file contains a sheet named exactly "Data Analysis - Curve"
+- Check that the sheet has "Time (Hour)" in the first column
+
+**Error: Could not find 'Layout' sheet**
+- Ensure your file has a "Layout" sheet with Well, Cell, and Treatment columns
+
+**"No values found >= threshold" warnings**
+- This means cells never reached the minimum threshold for that assay type
+- Check if correct assay type (CD19/BCMA) is in filename
+
+**Empty results or "Invalid" samples**
+- Verify cells reached sufficient growth before killing (≥0.4 for BCMA, ≥0.8 for CD19)
+- Check that cells actually dropped below half-max threshold
+- Ensure %CV is ≤30% (may need more consistent replicates)
+
+## Data Security
+
+- All file processing occurs in memory
+- No data is permanently stored by the application
+- Uploaded files are only accessible during the current session
+
+## Contributing
+
+For bug reports, feature requests, or questions, please contact the development team.
+
+## License
+
+Internal use for AstraZeneca.
+
+## Support
+
+For technical support or questions about the application:
+- Check the troubleshooting section above
+- Contact the ATAO team
+
+---
+
+**Current Version**: v0.93
+**Last Updated**: November 24, 2025
+**Maintained by**: AZ ATAO Data Science Team
