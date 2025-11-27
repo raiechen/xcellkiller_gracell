@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.93"
+APP_VERSION = "0.94"
 
 # Import the necessary libraries
 import streamlit as st
@@ -141,9 +141,10 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                     worksheet.set_column(idx, idx, adjusted_width)
                 
                 # Apply text wrapping to criteria columns with newlines
-                if 'ASSAY CRITERIA' in df.columns or 'SAMPLE CRITERIA' in df.columns or 'NEGATIVE CONTROL CRITERIA' in df.columns:
+                criteria_cols = ['ASSAY CRITERIA', 'SAMPLE CRITERIA', 'NEGATIVE CONTROL CRITERIA', 'CONTROL CRITERIA']
+                if any(col in df.columns for col in criteria_cols):
                     for idx, col in enumerate(df.columns):
-                        if col in ['ASSAY CRITERIA', 'SAMPLE CRITERIA', 'NEGATIVE CONTROL CRITERIA']:
+                        if col in criteria_cols:
                             # Set wider column width for criteria columns
                             worksheet.set_column(idx, idx, 60)
                             # Apply text wrap format to cells with content in these columns
@@ -153,7 +154,7 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                                     worksheet.write(row_num + 1, idx, cell_value, wrap_format)
 
                     # Set row height for the first data row (row 1, after header) to accommodate wrapped text
-                    worksheet.set_row(1, 75)  # Height in points (enough for 5-6 lines of text)
+                    worksheet.set_row(1, 130)  # Height in points (increased to accommodate Positive Control text)
 
                 # Apply highlighting if data is provided for this sheet (MUST BE BEFORE worksheet.protect())
                 if highlighting_data and safe_sheet_name in highlighting_data:
@@ -446,8 +447,36 @@ if uploaded_file:
                     st.error(f"Error reading Layout sheet: {str(e)}")
             else:
                 st.warning(f"Could not find '{layout_sheet_name}' sheet in the uploaded Excel file.")
-                    # Debug: Uncomment to view extracted treatment data structure
-                    # if st.session_state.extracted_treatment_data:
+            # Debug: Uncomment to view extracted treatment data structure
+            # if st.session_state.extracted_treatment_data:
+            #     st.write(st.session_state.extracted_treatment_data)
+
+            # --- Positive Control Selection ---
+            # Identify potential positive controls (containing "SSS")
+            all_sample_names = []
+            if 'Treatments' in st.session_state.extracted_treatment_data:
+                all_sample_names = list(st.session_state.extracted_treatment_data['Treatments'].keys())
+            
+            potential_pcs = [name for name in all_sample_names if "SSS" in name]
+            
+            st.markdown("### Positive Control Selection")
+            
+            if potential_pcs:
+                # If SSS found, auto-select the first one and hide dropdown
+                selected_pc = potential_pcs[0]
+                st.info(f"Positive Control automatically selected: **{selected_pc}** (detected 'SSS')")
+            else:
+                # If no SSS found, allow manual selection
+                pc_options = ["None"] + all_sample_names
+                selected_pc = st.selectbox(
+                    f"Select Positive Control for {uploaded_file.name}:",
+                    options=pc_options,
+                    index=0,
+                    key=f"pc_select_{uploaded_file.name}"
+                )
+            
+            current_file_results['positive_control'] = selected_pc
+            # --- End of Positive Control Selection ---
                     #     st.write("Extracted Treatment Data:")
                     #     st.json(st.session_state.extracted_treatment_data)
 # --- Determine and Display Overall Assay Status ---
@@ -482,114 +511,14 @@ if uploaded_file:
             st.markdown(f"### <span style='color:{assay_type_color};'>Assay Type: {assay_type_str}</span>", unsafe_allow_html=True)
             # --- End of Assay Type Display ---
             st.markdown("---") # Separator
-            if assay_status == "Pass":
-                st.markdown(f"### <span style='color:green;'>Assay Status: {assay_status}</span>", unsafe_allow_html=True)
-            elif assay_status == "Fail":
-                st.markdown(f"### <span style='color:red;'>Assay Status: {assay_status}</span>", unsafe_allow_html=True)
-            else: # Pending
-                st.markdown(f"### <span style='color:orange;'>Assay Status: {assay_status}</span>", unsafe_allow_html=True)
             
-            # --- Assay Status Criteria Checklist ---
-            st.markdown("#### Assay Status Criteria:")
+            # Create placeholders for Assay Status and Checklist
+            # These will be updated after the detailed analysis is complete
+            status_placeholder = st.empty()
+            checklist_placeholder = st.empty()
             
-            # Determine criteria status
-            med_sample_found = False
-            valid_columns_found = False
-            local_max_criteria_pass = True
-
-            if st.session_state.get('extracted_treatment_data') is not None and st.session_state.get('main_data_df') is not None:
-                # Check if Time (Hour) column exists
-                if "Time (Hour)" not in st.session_state.main_data_df.columns:
-                    local_max_criteria_pass = False
-                else:
-                    for treatment_group, assays in st.session_state.extracted_treatment_data.items():
-                        for assay_name_key, assay_data in assays.items():
-                            # Handle both old format (list) and new format (dict with 'input_ids' and 'source')
-                            if isinstance(assay_data, dict):
-                                input_ids = assay_data.get('input_ids', [])
-                                source = assay_data.get('source', 'Treatment')
-                            else:
-                                # Backwards compatibility with old format (list of input_ids)
-                                input_ids = assay_data
-                                source = 'Treatment'
-
-                            # CRITICAL: Only check samples from Treatment column for assay status
-                            if source != 'Treatment':
-                                continue
-
-                            assay_name_str = str(assay_name_key).strip()
-                            # Treat names starting with 'MED' or 'CMM' or containing the word 'only' (case-insensitive) as medium/media samples
-                            if assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
-                                med_sample_found = True
-
-                                potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
-                                valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
-
-                                if valid_well_columns:
-                                    valid_columns_found = True
-
-                                    for well_col_name in valid_well_columns:
-                                        try:
-                                            # Convert to numeric, coercing errors to NaN
-                                            well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
-                                            time_series = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
-
-                                            # Check if we have any valid numeric data after coercion
-                                            if well_data_series.notna().sum() == 0:
-                                                # No valid numeric data in this column
-                                                continue
-
-                                            # NEW LOGIC: Use global maximum across all time points
-                                            global_max_value = well_data_series.max()
-                                            global_max_idx = well_data_series.idxmax()
-
-                                            # Calculate half-max threshold
-                                            half_max_threshold = global_max_value / 2
-
-                                            # Find data after the global max time
-                                            after_max_mask = time_series > time_series.loc[global_max_idx]
-                                            data_after_max = well_data_series[after_max_mask]
-
-                                            if data_after_max.empty:
-                                                continue  # No data after max time
-
-                                            # NEW CRITERIA: Check half-max recovery
-                                            drops_below_half = (data_after_max < half_max_threshold).any()
-
-                                            if drops_below_half:
-                                                # If it drops below half-max, check if it recovers at the last time point
-                                                last_value = data_after_max.iloc[-1]
-                                                if last_value <= half_max_threshold:
-                                                    local_max_criteria_pass = False  # Dropped below half and didn't recover
-
-                                        except (ValueError, TypeError, KeyError, IndexError) as e:
-                                            st.warning(f"Error processing column {well_col_name}: {str(e)}")
-                                            local_max_criteria_pass = False
-
-            # If no Med sample was found, criterion 2 must automatically fail
-            if not med_sample_found:
-                local_max_criteria_pass = False
-
-            # Create a styled checkbox for each criterion
-            col1, col2 = st.columns([3, 1])
-
-            with col1:
-                st.markdown("1. Medium/only/CMM sample found in data")
-            with col2:
-                if med_sample_found:
-                    st.markdown("✅ Pass")
-                else:
-                    st.markdown("❌ Fail")
-
-            with col1:
-                st.markdown("2. Medium/only/CMM either: never drops below half of max cell index OR recovers above half-max at last time point")
-            with col2:
-                if local_max_criteria_pass:
-                    st.markdown("✅ Pass")
-                else:
-                    st.markdown("❌ Fail")
-            
-            # --- End of Assay Status Criteria Checklist ---
+            # Initial status message
+            status_placeholder.markdown(f"### <span style='color:orange;'>Assay Status: Pending Analysis...</span>", unsafe_allow_html=True)
             # --- End of Overall Assay Status Display ---
 # --- Display Detailed DataFrames for Each Assay (NEW - Attempt 2) ---
             if st.session_state.get('main_data_df') is not None and not st.session_state.main_data_df.empty and \
@@ -1000,16 +929,20 @@ if uploaded_file:
                                             }
                                             half_killing_summary_data.append(summary_row)
 
-                                            # Add to Print Report data
-                                            print_report_row = {
+                                            # Store data for print report
+                                            sample_type = "Sample"
+                                            if current_file_results.get('positive_control') and assay_name_key == current_file_results['positive_control']:
+                                                sample_type = "Positive Control"
+
+                                            print_report_data.append({
                                                 "Sample Name": assay_name_key,
+                                                "Sample Type": sample_type,
                                                 "Target": assay_type,
                                                 "Time (Hour) at max cell index": time_max_report,
                                                 "Max cell index": max_val_report,
                                                 "Time (Hour) at half cell index": time_half_report,
                                                 "Half cell index": half_val_report
-                                            }
-                                            print_report_data.append(print_report_row)
+                                            })
                                     # --- End of Half-Killing Time Calculation ---
                                     st.markdown("---")
     
@@ -1351,6 +1284,19 @@ if uploaded_file:
                         # Store results for this file
                         current_file_results['stats_df'] = stats_df.copy()
 
+                        # --- Positive Control Validation ---
+                        # Check if selected PC is invalid
+                        pc_name = current_file_results.get('positive_control')
+                        if pc_name and pc_name != "None" and "Sample (Valid/Invalid)" in stats_df.columns:
+                            # Find row for PC
+                            pc_row = stats_df[stats_df["Sample Name"] == pc_name]
+                            if not pc_row.empty:
+                                pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
+                                if pc_validity == "Invalid":
+                                    current_file_results['assay_status'] = "Fail"
+                                    st.warning(f"Assay Failed: Positive Control '{pc_name}' is Invalid.")
+                        # --- End of Positive Control Validation ---
+
                         # Store highlighting info for stats table (for Excel export)
                         stats_highlighting = {}
                         if 'Number of Replicates' in stats_df.columns:
@@ -1378,13 +1324,127 @@ if uploaded_file:
                 if print_report_data:
                     print_report_df = pd.DataFrame(print_report_data)
                     # Ensure column order
-                    pr_cols = ["Sample Name", "Target", "Time (Hour) at max cell index", "Max cell index", "Time (Hour) at half cell index", "Half cell index"]
+                    pr_cols = ["Sample Name", "Sample Type", "Target", "Time (Hour) at max cell index", "Max cell index", "Time (Hour) at half cell index", "Half cell index"]
                     # Filter for existing columns
                     pr_cols = [c for c in pr_cols if c in print_report_df.columns]
                     print_report_df = print_report_df[pr_cols]
                     current_file_results['print_report_df'] = print_report_df.copy()
                 else:
                     current_file_results['print_report_df'] = None
+
+            # --- Finalize Assay Status and Update Placeholders ---
+            # Determine final status based on PC selection and validity
+            final_assay_status = current_file_results['assay_status']
+            pc_name = current_file_results.get('positive_control')
+            pc_status_for_checklist = "Pending" # Default
+            
+            if pc_name == "None":
+                final_assay_status = "Pending"
+                pc_status_for_checklist = "Not Selected"
+            elif pc_name:
+                # PC was selected, check if it was valid (already done in validation block, but re-verify for checklist)
+                if final_assay_status == "Fail" and "Assay Failed: Positive Control" in str(current_file_results.get('assay_status_reason', '')):
+                     pc_status_for_checklist = "Fail"
+                else:
+                    # Check validity from stats_df again to be sure
+                    if current_file_results['stats_df'] is not None and "Sample (Valid/Invalid)" in current_file_results['stats_df'].columns:
+                        pc_row = current_file_results['stats_df'][current_file_results['stats_df']["Sample Name"] == pc_name]
+                        if not pc_row.empty:
+                            pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
+                            if pc_validity == "Invalid":
+                                pc_status_for_checklist = "Fail"
+                                final_assay_status = "Fail" # Ensure fail
+                            else:
+                                pc_status_for_checklist = "Pass"
+                        else:
+                             pc_status_for_checklist = "Unknown" # Should not happen
+                    else:
+                         pc_status_for_checklist = "Pending" # Stats not calculated yet?
+
+            # Update stored status
+            current_file_results['assay_status'] = final_assay_status
+
+            # Update Status Placeholder
+            if final_assay_status == "Pass":
+                status_placeholder.markdown(f"### <span style='color:green;'>Assay Status: {final_assay_status}</span>", unsafe_allow_html=True)
+            elif final_assay_status == "Fail":
+                status_placeholder.markdown(f"### <span style='color:red;'>Assay Status: {final_assay_status}</span>", unsafe_allow_html=True)
+            else: # Pending
+                status_placeholder.markdown(f"### <span style='color:orange;'>Assay Status: {final_assay_status}</span>", unsafe_allow_html=True)
+
+            # Re-calculate Negative Control criteria for checklist display
+            # (Logic copied from original display block)
+            med_sample_found = False
+            local_max_criteria_pass = True
+            
+            # Re-run the check logic briefly just for the checklist display variables
+            if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
+                 if "Time (Hour)" not in st.session_state.main_data_df.columns:
+                    local_max_criteria_pass = False
+                 else:
+                    for treatment_group, assays in st.session_state.extracted_treatment_data.items():
+                        for assay_name_key, assay_data in assays.items():
+                            if isinstance(assay_data, dict):
+                                input_ids = assay_data.get('input_ids', [])
+                                source = assay_data.get('source', 'Treatment')
+                            else:
+                                input_ids = assay_data
+                                source = 'Treatment'
+                            
+                            if source != 'Treatment': continue
+
+                            assay_name_str = str(assay_name_key).strip()
+                            if assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE):
+                                med_sample_found = True
+                                potential_column_names = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
+                                
+                                if valid_well_columns:
+                                    for well_col_name in valid_well_columns:
+                                        try:
+                                            well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
+                                            time_series = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+                                            if well_data_series.notna().sum() == 0: continue
+                                            
+                                            global_max_value = well_data_series.max()
+                                            global_max_idx = well_data_series.idxmax()
+                                            half_max_threshold = global_max_value / 2
+                                            after_max_mask = time_series > time_series.loc[global_max_idx]
+                                            data_after_max = well_data_series[after_max_mask]
+                                            
+                                            if data_after_max.empty: continue
+                                            
+                                            drops_below_half = (data_after_max < half_max_threshold).any()
+                                            if drops_below_half:
+                                                last_value = data_after_max.iloc[-1]
+                                                if last_value <= half_max_threshold:
+                                                    local_max_criteria_pass = False
+                                        except:
+                                            local_max_criteria_pass = False
+            
+            if not med_sample_found:
+                local_max_criteria_pass = False
+
+            # Update Checklist Placeholder
+            with checklist_placeholder.container():
+                st.markdown("#### Assay Status Criteria:")
+                col1, col2 = st.columns([3, 1])
+                
+                with col1: st.markdown("1. Medium/only/CMM sample found in data")
+                with col2: st.markdown("✅ Pass" if med_sample_found else "❌ Fail")
+                
+                with col1: st.markdown("2. Medium/only/CMM behavior check")
+                with col2: st.markdown("✅ Pass" if local_max_criteria_pass else "❌ Fail")
+                
+                with col1: st.markdown("3. Positive Control Selected and Valid")
+                with col2:
+                    if pc_status_for_checklist == "Pass":
+                        st.markdown("✅ Pass")
+                    elif pc_status_for_checklist == "Fail":
+                        st.markdown("❌ Fail")
+                    else:
+                        st.markdown("⚠️ Pending")
+            # --- End of Finalize Assay Status ---
 
             # Store this file's results in session state
             st.session_state.all_files_results[uploaded_file.name] = current_file_results
@@ -1409,9 +1469,13 @@ if uploaded_file:
         st.subheader("File Processing Summary")
         summary_data = []
         for file_name, results in st.session_state.all_files_results.items():
+            assay_type_display = results['assay_type']
+            if results.get('positive_control') and results['positive_control'] != "None":
+                assay_type_display += f"\nPositive Sample: {results['positive_control']}"
+            
             summary_data.append({
                 'File Name': file_name,
-                'Assay Type': results['assay_type'],
+                'Assay Type': assay_type_display,
                 'Assay Status': results['assay_status'],
                 'Has Data': 'Yes' if results['closest_df'] is not None else 'No'
             })
@@ -1425,15 +1489,15 @@ if uploaded_file:
         summary_df[''] = ''  # Spacer column
         summary_df['SAMPLE CRITERIA'] = ''
         summary_df['  '] = ''  # Another spacer column
-        summary_df['NEGATIVE CONTROL CRITERIA'] = ''
+        summary_df['CONTROL CRITERIA'] = ''
 
         # Fill in the sample criteria - combine both criteria into single cells
         sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
         summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
 
-        # Fill in the negative control criteria
-        negative_control_criteria_text = '1. Medium/only/CMM sample found in data\n2. Medium/only/CMM either:\n   - Never drops below half of max cell index\n   OR\n   - Recovers above half-max at last time point'
-        summary_df.loc[0, 'NEGATIVE CONTROL CRITERIA'] = negative_control_criteria_text
+        # Fill in the control criteria (Negative and Positive)
+        control_criteria_text = 'NEGATIVE CONTROL:\n1. Medium/only/CMM sample found\n2. Never drops below half-max OR recovers above half-max\n\nPOSITIVE CONTROL:\n1. Selected PC must be Valid (Passes Sample Criteria)'
+        summary_df.loc[0, 'CONTROL CRITERIA'] = control_criteria_text
         
         st.dataframe(summary_df)
         
@@ -1443,73 +1507,7 @@ if uploaded_file:
         # Add file summary (ensure sheet name is within limits)
         combined_data_to_export["File_Summary"] = summary_df
         
-        # Combine all closest_df data
-        all_closest_dfs = []
-        for file_name, results in st.session_state.all_files_results.items():
-            if results['closest_df'] is not None:
-                temp_df = results['closest_df'].copy()
-                temp_df['Source_File'] = file_name
-                temp_df['Assay_Type'] = results['assay_type']
-                temp_df['Assay_Status'] = results['assay_status']
-                all_closest_dfs.append(temp_df)
-        
-        if all_closest_dfs:
-            combined_closest_df = pd.concat(all_closest_dfs, ignore_index=True)
 
-            # Filter out MED/CMM/Only samples from combined results
-            if not combined_closest_df.empty and 'Sample Name' in combined_closest_df.columns:
-                try:
-                    med_only_mask = combined_closest_df['Sample Name'].apply(
-                        lambda x: str(x).strip().upper().startswith("MED") or str(x).strip().upper().startswith("CMM") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
-                    )
-                    if med_only_mask.any():  # Only filter if there are MED/Only/CMM samples to filter
-                        combined_closest_df = combined_closest_df[~med_only_mask]
-                except Exception as e:
-                    # If filtering fails, continue without filtering (keep all data)
-                    st.warning(f"Warning: Could not filter MED/Only/CMM samples from combined results: {str(e)}")
-
-            # Reorder columns to put file info first
-            cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_closest_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
-            combined_closest_df = combined_closest_df[cols]
-            # Use shortened sheet name that fits Excel's 31-character limit
-            combined_data_to_export["Combined_Half_Kill_Time"] = combined_closest_df
-            
-            with st.expander("Combined Summary: Half-Killing Time Analysis", expanded=False):
-                st.dataframe(combined_closest_df)
-        
-        # Combine all stats_df data
-        all_stats_dfs = []
-        for file_name, results in st.session_state.all_files_results.items():
-            if results['stats_df'] is not None:
-                temp_df = results['stats_df'].copy()
-                temp_df['Source_File'] = file_name
-                temp_df['Assay_Type'] = results['assay_type']
-                temp_df['Assay_Status'] = results['assay_status']
-                all_stats_dfs.append(temp_df)
-        
-        if all_stats_dfs:
-            combined_stats_df = pd.concat(all_stats_dfs, ignore_index=True)
-
-            # Filter out MED/CMM/Only samples from combined stats
-            if not combined_stats_df.empty and 'Sample Name' in combined_stats_df.columns:
-                try:
-                    med_only_mask = combined_stats_df['Sample Name'].apply(
-                        lambda x: str(x).strip().upper().startswith("MED") or str(x).strip().upper().startswith("CMM") or re.search(r"\bonly\b", str(x), flags=re.IGNORECASE)
-                    )
-                    if med_only_mask.any():  # Only filter if there are MED/Only/CMM samples to filter
-                        combined_stats_df = combined_stats_df[~med_only_mask]
-                except Exception as e:
-                    # If filtering fails, continue without filtering (keep all data)
-                    st.warning(f"Warning: Could not filter MED/Only/CMM samples from combined stats: {str(e)}")
-
-            # Reorder columns to put file info first
-            cols = ['Source_File', 'Assay_Type', 'Assay_Status'] + [col for col in combined_stats_df.columns if col not in ['Source_File', 'Assay_Type', 'Assay_Status']]
-            combined_stats_df = combined_stats_df[cols]
-            # Use shortened sheet name that fits Excel's 31-character limit
-            combined_data_to_export["Combined_Half_Kill_Stats"] = combined_stats_df
-
-            with st.expander("Combined Half-killing Time Statistics by Sample", expanded=False):
-                st.dataframe(combined_stats_df)
 
         # Combine all print_report_df data
         all_print_report_dfs = []
@@ -1525,21 +1523,7 @@ if uploaded_file:
         # Add detailed sample data from all files
         combined_highlighting_data = {}
 
-        # Add stats highlighting data for Combined_Half_Kill_Stats sheet
-        if all_stats_dfs and not combined_stats_df.empty:
-            stats_low_replicate_rows = []
-            if 'Number of Replicates' in combined_stats_df.columns:
-                for idx, row in combined_stats_df.iterrows():
-                    try:
-                        rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
-                        if pd.notna(rep_value) and rep_value < 3:
-                            stats_low_replicate_rows.append(idx)
-                    except:
-                        pass
-                if stats_low_replicate_rows:
-                    combined_highlighting_data['Combined_Half_Kill_Stats'] = {
-                        'low_replicate_rows': stats_low_replicate_rows
-                    }
+
         used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
         sheet_counter = 1
         
