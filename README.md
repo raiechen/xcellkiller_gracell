@@ -8,7 +8,8 @@ This application automates the analysis of xCELLigence real-time cell analysis (
 
 ## Features
 
-- **Automated Assay Validation**: Validates assay quality based on medium/negative control sample performance
+- **Automated Assay Validation**: Validates assay quality based on medium/negative control sample performance and Positive Control validity
+- **Positive Control Management**: Automatic detection of "SSS" samples as Positive Controls with validation integration
 - **Raw Data Validation**: Automatically detects and rejects "Lonza method" normalized data (where Column A contains "Normalized")
 - **Half-Killing Time Calculation**: Calculates time to reach half-maximum cell index for each well
 - **Statistical Analysis**: Computes mean, standard deviation, and coefficient of variation (%CV) for samples
@@ -69,20 +70,28 @@ The application expects Excel files (.xlsx) with the following structure:
 ### Analysis Workflow
 
 1. **Upload File**: Click "Choose an Excel file" and select your .xlsx file
-2. **Review Assay Status**: Check if assay passed validation criteria
-3. **Examine Sample Data**: Expand "Detailed Sample Data by Well" to see individual well analysis
-4. **Review Statistics**: Check the summary tables for half-killing times and sample validity
-5. **Download Results**: Click "📥 Download Analysis Results" to export Excel report
+2. **Positive Control Selection**: 
+   - Samples containing "SSS" are automatically detected and selected as Positive Control
+   - If no "SSS" sample found, manually select a Positive Control from dropdown (or select "None")
+3. **Review Assay Status**: Check if assay passed validation criteria (includes PC validation)
+4. **Examine Sample Data**: Expand "Detailed Sample Data by Well" to see individual well analysis
+5. **Review Statistics**: Check the summary tables for half-killing times and sample validity
+6. **Download Results**: Click "📥 Download Analysis Results" to export Excel report
 
 ## Validation Criteria
 
-### Assay Status Criteria (Negative Controls)
+### Assay Status Criteria
 
-An assay **PASSES** if:
-1. Medium/only/CMM sample is found in data
-2. Medium/only/CMM cells either:
+An assay **PASSES** if ALL of the following are met:
+
+1. **Negative Control - Medium Sample Found**: Medium/only/CMM sample is found in data
+2. **Negative Control - Medium Behavior**: Medium/only/CMM cells either:
    - Never drop below half of maximum cell index, OR
    - Recover above half-max at the last time point
+3. **Positive Control Validation**: Selected Positive Control (if any) must be Valid
+   - Automatically detects samples containing "SSS" as Positive Control
+   - PC must pass all Sample Validity Criteria (see below)
+   - If no PC selected, assay status remains "Pending"
 
 ### Sample Validity Criteria
 
@@ -102,10 +111,13 @@ A sample is **VALID** if ALL of the following are met:
 The exported Excel file contains multiple sheets:
 
 1. **File_Summary**: Overview of processed files with assay status and criteria
+   - Includes ASSAY CRITERIA, SAMPLE CRITERIA, and CONTROL CRITERIA columns
+   - CONTROL CRITERIA covers both Negative Control (Medium sample) and Positive Control validation
 2. **Combined_Half_Kill_Time**: Combined half-killing time data from all samples
 3. **Combined_Half_Kill_Stats**: Statistical summary with validity assessment
 4. **Individual Sample Sheets**: Detailed time-series data for each sample
-5. **Print Report**: Summary of key metrics for printing (Sample Name, Target, Max/Half Cell Index & Time)
+5. **Print Report**: Summary of key metrics for printing
+   - Includes Sample Name, Sample Type (Sample/Positive Control), Target, Max/Half Cell Index & Time
 6. **Audit_Trail**: Original audit trail from input file (if present)
 
 ### Color Coding in Excel Export
@@ -119,7 +131,25 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.93 (Current)
+### Version 0.94 (Current)
+**Release Date**: 2025-11-26
+
+**Changes**:
+- **New Feature**: Added Positive Control (PC) selection and validation
+  - Automatically detects and selects samples containing "SSS" as Positive Control
+  - Manual PC selection available when no "SSS" sample is found
+  - PC validation integrated into assay status criteria
+- **Enhanced Assay Criteria**: Assay status now includes Positive Control validation
+  - Assay fails if selected PC is Invalid (fails sample validity criteria)
+  - Three-criteria checklist: Medium sample, Medium behavior, and PC validity
+- **Updated Excel Export**: 
+  - "NEGATIVE CONTROL CRITERIA" column renamed to "CONTROL CRITERIA"
+  - Control Criteria now includes both Negative and Positive Control requirements
+  - Increased row height for criteria display (75 → 130 points)
+- **Enhanced Print Report**: Added "Sample Type" column to distinguish between "Sample" and "Positive Control"
+- **Improved Assay Type Display**: Shows selected Positive Control sample name below assay type
+
+### Version 0.93
 **Release Date**: 2025-11-24
 
 **Changes**:
@@ -229,6 +259,6 @@ For technical support or questions about the application:
 
 ---
 
-**Current Version**: v0.93
-**Last Updated**: November 24, 2025
+**Current Version**: v0.94
+**Last Updated**: November 26, 2025
 **Maintained by**: AZ ATAO Data Science Team
