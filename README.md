@@ -131,7 +131,20 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.94 (Current)
+### Version 0.95 (Current)
+**Release Date**: 2025-12-04
+
+**Changes**:
+- **Enhanced Summary Table**: Improved "Summary: Half-Killing Time Analysis" table
+  - Removed "Treatment" column for cleaner presentation
+  - Renamed "Killed below 0.5" to "Killed below half max cell index" for clarity
+  - Added "Max cell index time (Hour)" column to show when maximum cell index was reached
+  - Added "Max cell index time (hh:mm:ss)" column with time in hh:mm:ss format
+  - Renamed "Half-killing target (Hour)" to "Closest Time to 1/2 Max Cell Index (Hour)"
+  - Renamed "Half-killing target (hh:mm:ss)" to "Closest Time to 1/2 Max Cell Index (hh:mm:ss)"
+- **Improved Column Naming**: More descriptive and consistent column names throughout the analysis
+
+### Version 0.94
 **Release Date**: 2025-11-26
 
 **Changes**:
@@ -259,6 +272,6 @@ For technical support or questions about the application:
 
 ---
 
-**Current Version**: v0.94
-**Last Updated**: November 26, 2025
+**Current Version**: v0.95
+**Last Updated**: December 4, 2025
 **Maintained by**: AZ ATAO Data Science Team
