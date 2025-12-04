@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.94"
+APP_VERSION = "0.95"
 
 # Import the necessary libraries
 import streamlit as st
@@ -819,11 +819,13 @@ if uploaded_file:
                                                             closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
                                                             closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
                                                             time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
+                                                            time_at_1_hhmmss = assay_display_df.loc[idx_at_1, "Time (hh:mm:ss)"]
                                                             half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
 
                                                             # Capture data for Print Report
                                                             max_val_report = 1.0
                                                             time_max_report = time_at_1_hour
+                                                            time_max_hhmmss_report = time_at_1_hhmmss
                                                             half_val_report = 0.5
                                                             time_half_report = closest_to_0_5_hour_val
                                                         else:
@@ -840,6 +842,7 @@ if uploaded_file:
                                                         # Find index of max value within the valid values (above threshold)
                                                         idx_max_value = valid_values.idxmax()
                                                         time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
+                                                        time_at_max_hhmmss = assay_display_df.loc[idx_max_value, "Time (hh:mm:ss)"]
 
                                                         # Find time closest to half-killing target ONLY AFTER the max value
                                                         data_after_max = well_data_series.loc[idx_max_value:]
@@ -858,6 +861,7 @@ if uploaded_file:
                                                                 # Capture data for Print Report
                                                                 max_val_report = max_value
                                                                 time_max_report = time_at_max_hour
+                                                                time_max_hhmmss_report = time_at_max_hhmmss
                                                                 half_val_report = half_killing_target
                                                                 time_half_report = closest_to_0_5_hour_val
                                                             else:
@@ -910,10 +914,11 @@ if uploaded_file:
                                             # Create summary data rows (moved outside the try block)
                                             target_data_row = {
                                                 "Sample Name": assay_name_key,
-                                                "Treatment": treatment_group,
-                                                "Killed below 0.5": killed_status,
-                                                "Half-killing target (Hour)": closest_to_0_5_hour_val,
-                                                "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
+                                                "Killed below half max cell index": killed_status,
+                                                "Max cell index time (Hour)": time_max_report,
+                                                "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
+                                                "Closest Time to 1/2 Max Cell Index (Hour)": closest_to_0_5_hour_val,
+                                                "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_to_0_5_hhmmss_val,
                                                 "Half-killing time (Hour)": half_killing_time_calc
                                             }
                                             closest_to_half_target_data.append(target_data_row)
@@ -922,7 +927,7 @@ if uploaded_file:
                                                 "Sample Name": assay_name_key,
                                                 "Treatment": treatment_group,
                                                 "Well ID": well_col_name_calc,
-                                                "Killed below 0.5": killed_status,
+                                                "Killed below half max cell index": killed_status,
                                                 "Half-killing target (Hour)": closest_to_0_5_hour_val,
                                                 "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
                                                 "Half-killing time (Hour)": half_killing_time_calc
@@ -1048,20 +1053,20 @@ if uploaded_file:
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
                     # Ensure correct column order for display, including the new column
-                    column_order = ["Sample Name", "Treatment", "Killed below 0.5", "Half-killing target (Hour)", "Half-killing target (hh:mm:ss)", "Half-killing time (Hour)"]
+                    column_order = ["Sample Name", "Killed below half max cell index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)"]
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
                     existing_columns_in_order = [col for col in column_order if col in closest_df.columns]
                     closest_df = closest_df[existing_columns_in_order]
                     st.dataframe(closest_df)
 
-                    # --- Calculate "Killed below 0.5 Summary" for stats_df ---
+                    # --- Calculate "Killed below half max cell index Summary" for stats_df ---
                     kill_summary_series = pd.Series(dtype=str) # Initialize an empty Series
-                    if not closest_df.empty and "Sample Name" in closest_df.columns and "Killed below 0.5" in closest_df.columns:
-                        # Ensure "Killed below 0.5" is string type for reliable counting
-                        closest_df["Killed below 0.5"] = closest_df["Killed below 0.5"].astype(str)
-                        kill_summary_series = closest_df.groupby("Sample Name")["Killed below 0.5"].apply(format_kill_summary)
-                        kill_summary_series = kill_summary_series.rename("Killed below 0.5 Summary")
-                    # --- End of "Killed below 0.5 Summary" calculation ---
+                    if not closest_df.empty and "Sample Name" in closest_df.columns and "Killed below half max cell index" in closest_df.columns:
+                        # Ensure "Killed below half max cell index" is string type for reliable counting
+                        closest_df["Killed below half max cell index"] = closest_df["Killed below half max cell index"].astype(str)
+                        kill_summary_series = closest_df.groupby("Sample Name")["Killed below half max cell index"].apply(format_kill_summary)
+                        kill_summary_series = kill_summary_series.rename("Killed below half max cell index Summary")
+                    # --- End of "Killed below half max cell index Summary" calculation ---
 
                     # --- Calculate and Display Statistics Table (Average, Std Dev, %CV) ---
                     if not closest_df.empty and "Half-killing time (Hour)" in closest_df.columns:
@@ -1205,12 +1210,12 @@ if uploaded_file:
                             stats_df = pd.merge(stats_df, kill_summary_series, on="Sample Name", how="left")
                         else:
                             # Ensure the column exists even if the series was empty, fill with a default
-                            if "Killed below 0.5 Summary" not in stats_df.columns and "Sample Name" in stats_df.columns:
-                                 stats_df["Killed below 0.5 Summary"] = "N/A"
+                            if "Killed below half max cell index Summary" not in stats_df.columns and "Sample Name" in stats_df.columns:
+                                 stats_df["Killed below half max cell index Summary"] = "N/A"
 
 
                         # Add "Sample (Valid/Invalid)" column with new time criteria AND recovery check
-                        if "Killed below 0.5 Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns and "Average Half-killing time (Hour)" in stats_df.columns:
+                        if "Killed below half max cell index Summary" in stats_df.columns and "%CV Pass/Fail" in stats_df.columns and "Average Half-killing time (Hour)" in stats_df.columns:
                             # Convert formatted string back to numeric for comparison
                             avg_time_numeric = pd.to_numeric(stats_df["Average Half-killing time (Hour)"], errors='coerce')
 
@@ -1220,7 +1225,7 @@ if uploaded_file:
 
                             # Valid if: All killed + %CV Pass + Average time <= 12 hours + No recovery at last time point
                             condition = (
-                                (stats_df["Killed below 0.5 Summary"] == "All Yes") &
+                                (stats_df["Killed below half max cell index Summary"] == "All Yes") &
                                 (stats_df["%CV Pass/Fail"] == "Pass") &
                                 (avg_time_numeric <= 12) &
                                 no_recovery_series
@@ -1252,9 +1257,9 @@ if uploaded_file:
                             else: # if CV hour is not even in stats_df
                                 desired_column_order.append("%CV Pass/Fail")
                         
-                        # Add "Killed below 0.5 Summary" towards the end of the primary desired columns
-                        if "Killed below 0.5 Summary" in stats_df.columns:
-                            desired_column_order.append("Killed below 0.5 Summary")
+                        # Add "Killed below half max cell index Summary" towards the end of the primary desired columns
+                        if "Killed below half max cell index Summary" in stats_df.columns:
+                            desired_column_order.append("Killed below half max cell index Summary")
 
                         # Add any remaining columns from stats_df that are not in desired_column_order yet
                         # This ensures all columns are present, even if new ones are added unexpectedly
