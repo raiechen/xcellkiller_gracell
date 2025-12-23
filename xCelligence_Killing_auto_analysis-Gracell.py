@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.95"
+APP_VERSION = "0.96"
 
 # Import the necessary libraries
 import streamlit as st
@@ -121,7 +121,12 @@ def dfs_to_excel_bytes(dfs_map, highlighting_data=None):
                 invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
                 for char in invalid_chars:
                     safe_sheet_name = safe_sheet_name.replace(char, '_')
-                
+
+                # For Print Report, replace None/NaN with "N/A"
+                if sheet_name == "Print Report":
+                    df = df.copy()  # Don't modify the original
+                    df = df.fillna("N/A")
+
                 df.to_excel(writer, index=False, sheet_name=safe_sheet_name)
                 
                 # Auto-adjust column widths for better readability
@@ -643,8 +648,10 @@ if uploaded_file:
 
                                                     # Only search for half-killing target AFTER the max value
                                                     data_after_max = well_data_series_hl.loc[idx_max_value:]
-                                                    if len(data_after_max) > 1:  # Need at least one point after max
-                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                    if len(data_after_max) >= 1:  # Need at least one point after max
+                                                        # Only exclude the max point if there's more than one point
+                                                        if len(data_after_max) > 1:
+                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
                                                         if not data_after_max.empty:
                                                             # IMPORTANT: Only highlight if cells actually DROP BELOW half-killing target
                                                             # Don't highlight if they stay above it
@@ -846,8 +853,10 @@ if uploaded_file:
 
                                                         # Find time closest to half-killing target ONLY AFTER the max value
                                                         data_after_max = well_data_series.loc[idx_max_value:]
-                                                        if len(data_after_max) > 1:  # Need at least one point after max
-                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                        if len(data_after_max) >= 1:  # Need at least one point after max
+                                                            # Only exclude the max point if there's more than one point
+                                                            if len(data_after_max) > 1:
+                                                                data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
                                                             if not data_after_max.empty:
                                                                 idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
 
@@ -912,14 +921,26 @@ if uploaded_file:
                                                 continue
     
                                             # Create summary data rows (moved outside the try block)
+                                            # Only include half-killing time if cells were actually killed
+                                            if killed_status == "Yes":
+                                                half_killing_display = half_killing_time_calc
+                                                closest_hour_display = closest_to_0_5_hour_val
+                                                closest_hhmmss_display = closest_to_0_5_hhmmss_val
+                                            else:
+                                                # Cells never dropped below half max, so no half-killing time
+                                                # Use None instead of "N/A" to avoid Arrow serialization errors
+                                                half_killing_display = None
+                                                closest_hour_display = None
+                                                closest_hhmmss_display = None
+
                                             target_data_row = {
                                                 "Sample Name": assay_name_key,
                                                 "Killed below half max cell index": killed_status,
                                                 "Max cell index time (Hour)": time_max_report,
                                                 "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
-                                                "Closest Time to 1/2 Max Cell Index (Hour)": closest_to_0_5_hour_val,
-                                                "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_to_0_5_hhmmss_val,
-                                                "Half-killing time (Hour)": half_killing_time_calc
+                                                "Closest Time to 1/2 Max Cell Index (Hour)": closest_hour_display,
+                                                "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_hhmmss_display,
+                                                "Half-killing time (Hour)": half_killing_display
                                             }
                                             closest_to_half_target_data.append(target_data_row)
 
@@ -928,9 +949,9 @@ if uploaded_file:
                                                 "Treatment": treatment_group,
                                                 "Well ID": well_col_name_calc,
                                                 "Killed below half max cell index": killed_status,
-                                                "Half-killing target (Hour)": closest_to_0_5_hour_val,
-                                                "Half-killing target (hh:mm:ss)": closest_to_0_5_hhmmss_val,
-                                                "Half-killing time (Hour)": half_killing_time_calc
+                                                "Half-killing target (Hour)": closest_hour_display,
+                                                "Half-killing target (hh:mm:ss)": closest_hhmmss_display,
+                                                "Half-killing time (Hour)": half_killing_display
                                             }
                                             half_killing_summary_data.append(summary_row)
 
@@ -939,14 +960,23 @@ if uploaded_file:
                                             if current_file_results.get('positive_control') and assay_name_key == current_file_results['positive_control']:
                                                 sample_type = "Positive Control"
 
+                                            # Use appropriate values based on killed status
+                                            if killed_status == "Yes":
+                                                time_half_report_display = time_half_report
+                                                half_val_report_display = half_val_report
+                                            else:
+                                                # Use None instead of "N/A" to avoid Arrow serialization errors
+                                                time_half_report_display = None
+                                                half_val_report_display = None
+
                                             print_report_data.append({
                                                 "Sample Name": assay_name_key,
                                                 "Sample Type": sample_type,
                                                 "Target": assay_type,
                                                 "Time (Hour) at max cell index": time_max_report,
                                                 "Max cell index": max_val_report,
-                                                "Time (Hour) at half cell index": time_half_report,
-                                                "Half cell index": half_val_report
+                                                "Time (Hour) at half cell index": time_half_report_display,
+                                                "Half cell index": half_val_report_display
                                             })
                                     # --- End of Half-Killing Time Calculation ---
                                     st.markdown("---")
@@ -1149,8 +1179,10 @@ if uploaded_file:
 
                                                 # Get data after max point
                                                 data_after_max = well_data_series.loc[idx_max_value:]
-                                                if len(data_after_max) > 1:
-                                                    data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                if len(data_after_max) >= 1:
+                                                    # Only exclude the max point if there's more than one point
+                                                    if len(data_after_max) > 1:
+                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
 
                                                     if not data_after_max.empty:
                                                         # Check if cells drop below half-max
