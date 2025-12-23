@@ -131,7 +131,27 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.95 (Current)
+### Version 0.96 (Current)
+**Release Date**: 2025-12-23
+
+**Changes**:
+- **Critical Fix**: Resolved issue where samples with max cell index occurring at or near the last data point were excluded from analysis
+  - Wells where maximum cell index occurs at the last time point are now correctly included
+  - Previously, these wells were skipped because there was no data after the max point
+  - Affects experiments that ended before cells began declining
+- **Enhanced Data Validation**: Half-killing time now only calculated for wells that were actually killed
+  - Wells with "Killed below half max cell index" = "No" now show empty/blank values for half-killing time
+  - Prevents misleading half-killing time values for wells where cells never dropped below half-max
+  - Statistics tables correctly handle samples with no killed wells (shows NaN/blank)
+- **Improved Excel Export**: Print Report tab now displays "N/A" for empty cells instead of blank
+  - Clearer indication when half-killing data is not available for non-killed samples
+  - Maintains data consistency across export formats
+
+**Bug Fixes**:
+- Fixed Arrow serialization error when exporting data with mixed numeric/string types
+- Changed internal representation from "N/A" strings to None values to prevent serialization errors
+
+### Version 0.95
 **Release Date**: 2025-12-04
 
 **Changes**:
@@ -272,6 +292,6 @@ For technical support or questions about the application:
 
 ---
 
-**Current Version**: v0.95
-**Last Updated**: December 4, 2025
+**Current Version**: v0.96
+**Last Updated**: December 23, 2025
 **Maintained by**: AZ ATAO Data Science Team
