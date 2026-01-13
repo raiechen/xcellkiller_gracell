@@ -142,6 +142,21 @@ The exported Excel file contains multiple sheets:
   - Works with extra words: "cell effector added", "add cell effector"
   - Remains case-insensitive for all variations
 
+**Enhanced Decision Tree for Effector Time Detection**:
+1. **PRIORITY 1**: Look for "effector" + "add" in Reason column (case insensitive, typo-tolerant)
+   - Searches Audit Trail Reason column for entries containing both keywords
+   - Uses largest ID if multiple matches found
+   - Most reliable method when available
+   
+2. **PRIORITY 2**: Fall back to "Continue Experiment" in Action column
+   - Only used if Priority 1 finds nothing
+   - Uses larger ID (most recent continuation)
+   - **Warning displayed** if more than 2 Continue Experiment actions found
+   
+3. **PRIORITY 3**: Graceful fallback
+   - Returns None if no Audit Trail or detection fails
+   - Application uses all data (original behavior before v0.97)
+
 **Pattern Matching Examples**:
 - ✓ Handles: "added effectors", "add effector", "effector added"
 - ✓ Handles typos: "added efector", "added effecor", "added effctor"
