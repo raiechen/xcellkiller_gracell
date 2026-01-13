@@ -131,7 +131,37 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.97 (Current)
+### Version 0.98 (Current)
+**Release Date**: January 13, 2026
+
+**Enhancement - Typo-Tolerant Effector Detection**:
+- **Robust Pattern Matching**: Enhanced effector time detection with typo tolerance
+  - Now handles common typos in "effector": efector, effecor, effctor, efetor
+  - Accepts word variations: add, added, adding, addition
+  - Supports flexible word order: "added effector" OR "effector added"
+  - Works with extra words: "cell effector added", "add cell effector"
+  - Remains case-insensitive for all variations
+
+**Pattern Matching Examples**:
+- ✓ Handles: "added effectors", "add effector", "effector added"
+- ✓ Handles typos: "added efector", "added effecor", "added effctor"
+- ✓ Handles variations: "effector addition", "adding effector"
+- ✓ Handles any case: "ADDED EFFECTOR", "Added Effectors"
+- ✗ Avoids false positives: "continue experiment", "added targets"
+
+**Technical Details**:
+- Uses regex pattern matching: `r'ef+[ef]?[ce]?[tc]?[o]?r'` for "effector" with typos
+- Requires both "effector" (or variant) AND "add" (or variant) in Reason text
+- Tested with 100% accuracy on 16 test cases
+- No breaking changes to existing functionality
+
+**Benefits**:
+- More user-friendly: handles real-world data entry variations
+- Reduces false negatives from simple typos
+- Maintains specificity: won't match unrelated phrases
+- Backward compatible with v0.97 files
+
+### Version 0.97
 **Release Date**: January 13, 2026
 
 **Major Enhancement - Audit Trail Integration**:
@@ -326,6 +356,6 @@ For technical support or questions about the application:
 
 ---
 
-**Current Version**: v0.97
+**Current Version**: v0.98
 **Last Updated**: January 13, 2026
 **Maintained by**: AZ ATAO Data Science Team
