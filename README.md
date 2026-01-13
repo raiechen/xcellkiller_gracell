@@ -131,8 +131,42 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.96 (Current)
-**Release Date**: 2025-12-23
+### Version 0.97 (Current)
+**Release Date**: January 13, 2026
+
+**Major Enhancement - Audit Trail Integration**:
+- **Critical Fix**: Resolved issue where maximum cell index occurring BEFORE cell effector addition caused incorrect calculations throughout the application
+  - Application now automatically detects cell effector addition time from **Audit Trail** sheet
+  - Finds "Continue Experiment" action with larger ID (most recent continuation)
+  - Extracts "Experiment Time" and converts to hours (e.g., "02:06:58" → 2.1161 hours)
+  - All calculations now use only data from **after** effector addition time
+
+**What's Fixed**:
+- ✅ **Assay Status Validation**: Medium/Only/CMM samples now validated using post-effector data
+- ✅ **Half-Killing Highlighting (Yellow)**: Highlights correct half-killing point based on post-effector max
+- ✅ **Max Cell Index Highlighting (Green)**: Both MED and non-MED samples now highlight post-effector max
+- ✅ **Half-Killing Time Calculation**: Uses post-effector max for BCMA (≥0.4) and CD19 (≥0.8) thresholds
+- ✅ **Killed Status Determination**: Checks if cells dropped below half-max using post-effector data
+- ✅ **Checklist Validation**: Consistent effector-aware logic across all validation criteria
+
+**Example Impact**:
+- **Before**: Max at 1.9644h (BEFORE effector at 2.1161h) ❌
+- **After**: Max at 2.6192h (AFTER effector at 2.1161h) ✓
+- Results: Correct highlighting, accurate half-killing times, proper assay status
+
+**Backward Compatibility**:
+- ✅ Files **without** Audit Trail continue to work with original logic (uses all data)
+- ✅ Files **with** Audit Trail but no "Continue Experiment" action gracefully fall back
+- ✅ No breaking changes to existing functionality
+
+**Technical Details**:
+- New function: `get_effector_addition_time(excel_file)`
+- Supports both "Audit Trail" and "Audit_Trail" sheet naming conventions
+- Enhanced filtering in 6 key calculation sections
+- Full documentation in `AUDIT_TRAIL_EFFECTOR_TIME.md` and `COMPLETE_FIX_SUMMARY.md`
+
+### Version 0.96
+**Release Date**: December 23, 2025
 
 **Changes**:
 - **Critical Fix**: Resolved issue where samples with max cell index occurring at or near the last data point were excluded from analysis
@@ -292,6 +326,6 @@ For technical support or questions about the application:
 
 ---
 
-**Current Version**: v0.96
-**Last Updated**: December 23, 2025
+**Current Version**: v0.97
+**Last Updated**: January 13, 2026
 **Maintained by**: AZ ATAO Data Science Team
