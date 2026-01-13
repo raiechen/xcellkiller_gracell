@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.96"
+APP_VERSION = "0.97"
 
 # Import the necessary libraries
 import streamlit as st
@@ -10,14 +10,62 @@ import datetime # For timestamping the export file
 import re # For parsing Input ID
 import plotly.express as px # For plotting
 
+# Function to extract cell effector addition time from Audit Trail
+def get_effector_addition_time(excel_file):
+    """
+    Extract the time when cell effector was added from Audit Trail sheet.
+    Returns the experiment time in hours, or None if not found.
+    """
+    try:
+        # Check both naming conventions
+        audit_sheet_name = None
+        if 'Audit Trail' in excel_file.sheet_names:
+            audit_sheet_name = 'Audit Trail'
+        elif 'Audit_Trail' in excel_file.sheet_names:
+            audit_sheet_name = 'Audit_Trail'
+        
+        if audit_sheet_name is None:
+            return None
+        
+        audit_df = excel_file.parse(audit_sheet_name)
+        
+        # Find all "Continue Experiment" actions
+        continue_exp = audit_df[audit_df['Action'] == 'Continue Experiment'].copy()
+        
+        if continue_exp.empty:
+            return None
+        
+        # Get the one with the larger ID (most recent)
+        max_id_row = continue_exp.loc[continue_exp['ID'].idxmax()]
+        experiment_time_str = str(max_id_row['Experiment Time'])
+        
+        # Convert "HH:MM:SS" to hours
+        time_parts = experiment_time_str.split(':')
+        if len(time_parts) == 3:
+            hours = int(time_parts[0])
+            minutes = int(time_parts[1])
+            seconds = int(time_parts[2])
+            total_hours = hours + minutes / 60.0 + seconds / 3600.0
+            return total_hours
+        
+        return None
+    except Exception as e:
+        # If anything goes wrong, return None and fall back to default behavior
+        return None
+
 # Function to determine overall assay status
-def determine_assay_status(extracted_treatment_data, main_df):
+def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
     if not extracted_treatment_data or main_df is None or main_df.empty:
         return "Pending"
 
     # Check if Time (Hour) column exists
     if "Time (Hour)" not in main_df.columns:
         return "Fail"
+    
+    # Try to get cell effector addition time from Audit Trail
+    effector_time_hours = None
+    if excel_file is not None:
+        effector_time_hours = get_effector_addition_time(excel_file)
 
     for treatment_group, assays in extracted_treatment_data.items():
         for assay_name_key, assay_data in assays.items():
@@ -62,16 +110,30 @@ def determine_assay_status(extracted_treatment_data, main_df):
                         if well_data_series.notna().sum() == 0:
                             continue  # No valid numeric data
 
-                        # Find global maximum
-                        global_max_value = well_data_series.max()
-                        global_max_idx = well_data_series.idxmax()
+                        # Filter data to only consider time points after effector addition (if available)
+                        if effector_time_hours is not None:
+                            # Only consider data after effector addition time
+                            after_effector_mask = time_series >= effector_time_hours
+                            well_data_filtered = well_data_series[after_effector_mask]
+                            time_filtered = time_series[after_effector_mask]
+                            
+                            if well_data_filtered.notna().sum() == 0:
+                                continue  # No valid data after effector addition
+                        else:
+                            # No effector time found, use all data (original behavior)
+                            well_data_filtered = well_data_series
+                            time_filtered = time_series
+
+                        # Find global maximum in the filtered data
+                        global_max_value = well_data_filtered.max()
+                        global_max_idx = well_data_filtered.idxmax()
 
                         # Calculate half-max threshold
                         half_max_threshold = global_max_value / 2
 
                         # Find data after the global max time
-                        after_max_mask = time_series > time_series.loc[global_max_idx]
-                        data_after_max = well_data_series[after_max_mask]
+                        after_max_mask = time_filtered > time_filtered.loc[global_max_idx]
+                        data_after_max = well_data_filtered[after_max_mask]
 
                         if data_after_max.empty:
                             continue  # No data after max time
@@ -493,7 +555,8 @@ if uploaded_file:
                 
                 assay_status = determine_assay_status(
                     st.session_state.extracted_treatment_data,
-                    st.session_state.main_data_df
+                    st.session_state.main_data_df,
+                    excel_file
                 )
             
             # Store assay status for this file
@@ -538,6 +601,9 @@ if uploaded_file:
 
                     main_df_cols = st.session_state.main_data_df.columns
                     required_time_cols = ["Time (Hour)", "Time (hh:mm:ss)"]
+                    
+                    # Get effector addition time for use in max cell index calculations
+                    effector_time_hours = get_effector_addition_time(excel_file) if excel_file else None
                     
                     # Check for essential time columns in main_data_df
                     missing_global_time_cols = [col for col in required_time_cols if col not in main_df_cols]
@@ -630,11 +696,20 @@ if uploaded_file:
 
                                             try:
                                                 well_data_series_hl = pd.to_numeric(assay_display_df[well_col_name_hl], errors='coerce')
+                                                
+                                                # Filter data to only consider time points after effector addition (if available)
+                                                if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
+                                                    time_series_hl = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
+                                                    after_effector_mask = time_series_hl >= effector_time_hours
+                                                    well_data_filtered_hl = well_data_series_hl[after_effector_mask]
+                                                else:
+                                                    # No effector time found, use all data (original behavior)
+                                                    well_data_filtered_hl = well_data_series_hl
 
                                                 if assay_type == "BCMA":
-                                                    valid_values = well_data_series_hl[well_data_series_hl >= 0.4]
+                                                    valid_values = well_data_filtered_hl[well_data_filtered_hl >= 0.4]
                                                 elif assay_type == "CD19":
-                                                    valid_values = well_data_series_hl[well_data_series_hl >= 0.8]
+                                                    valid_values = well_data_filtered_hl[well_data_filtered_hl >= 0.8]
                                                 else:
                                                     # Default/unknown assay type - skip highlighting
                                                     continue
@@ -647,7 +722,7 @@ if uploaded_file:
                                                     idx_max_value = valid_values.idxmax()
 
                                                     # Only search for half-killing target AFTER the max value
-                                                    data_after_max = well_data_series_hl.loc[idx_max_value:]
+                                                    data_after_max = well_data_filtered_hl.loc[idx_max_value:]
                                                     if len(data_after_max) >= 1:  # Need at least one point after max
                                                         # Only exclude the max point if there's more than one point
                                                         if len(data_after_max) > 1:
@@ -677,19 +752,29 @@ if uploaded_file:
                                             s_num = pd.to_numeric(assay_display_df[well_col_name_max], errors='coerce')
                                             if s_num.notna().any():
                                                 if is_med_only_sample and "Time (Hour)" in assay_display_df.columns:
-                                                    # For MED/Only/CMM samples, find local max before 8 hours
+                                                    # For MED/Only/CMM samples, find local max after effector addition (if available)
                                                     time_series = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
-                                                    before_8h_mask = time_series <= 8
-                                                    data_before_8h = s_num[before_8h_mask]
+                                                    
+                                                    # Filter data based on effector addition time
+                                                    if effector_time_hours is not None:
+                                                        # Only consider data after effector addition
+                                                        after_effector_mask = time_series >= effector_time_hours
+                                                        data_filtered = s_num[after_effector_mask]
+                                                        time_filtered = time_series[after_effector_mask]
+                                                    else:
+                                                        # Fallback: Use data before 8 hours (original behavior)
+                                                        before_8h_mask = time_series <= 8
+                                                        data_filtered = s_num[before_8h_mask]
+                                                        time_filtered = time_series[before_8h_mask]
 
-                                                    if not data_before_8h.empty:
-                                                        local_max_idx = data_before_8h.idxmax()
+                                                    if not data_filtered.empty:
+                                                        local_max_idx = data_filtered.idxmax()
                                                         max_indices[well_col_name_max] = local_max_idx
                                                         
                                                         # Find if/where it drops below half of local max
-                                                        local_max_value = data_before_8h.loc[local_max_idx]
+                                                        local_max_value = data_filtered.loc[local_max_idx]
                                                         half_max_threshold = local_max_value / 2
-                                                        local_max_time = time_series.loc[local_max_idx]
+                                                        local_max_time = time_filtered.loc[local_max_idx]
                                                         
                                                         # Check data after local max time
                                                         after_max_mask = time_series > local_max_time
@@ -702,11 +787,23 @@ if uploaded_file:
                                                                 first_below_half_idx = data_after_max[below_half_mask].index[0]
                                                                 below_half_max_indices[well_col_name_max] = first_below_half_idx
                                                     else:
-                                                        # Fallback to overall max if no data before 8h
+                                                        # Fallback to overall max if no filtered data
                                                         max_indices[well_col_name_max] = s_num.idxmax()
                                                 else:
-                                                    # For non-MED samples, use overall max
-                                                    max_indices[well_col_name_max] = s_num.idxmax()
+                                                    # For non-MED samples, also filter by effector time if available
+                                                    if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
+                                                        time_series = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
+                                                        after_effector_mask = time_series >= effector_time_hours
+                                                        data_filtered = s_num[after_effector_mask]
+                                                        
+                                                        if not data_filtered.empty:
+                                                            max_indices[well_col_name_max] = data_filtered.idxmax()
+                                                        else:
+                                                            # Fallback to overall max if no data after effector
+                                                            max_indices[well_col_name_max] = s_num.idxmax()
+                                                    else:
+                                                        # No effector time, use overall max
+                                                        max_indices[well_col_name_max] = s_num.idxmax()
                                         except Exception:
                                             continue
 
@@ -806,21 +903,30 @@ if uploaded_file:
                                             # NEW APPROACH: No longer looking for value "1" first
                                             # Instead, directly apply assay-specific thresholds to entire dataset
                                             try:
+                                                # Filter data to only consider time points after effector addition (if available)
+                                                if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
+                                                    time_series_calc = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
+                                                    after_effector_mask = time_series_calc >= effector_time_hours
+                                                    well_data_filtered_calc = well_data_series[after_effector_mask]
+                                                else:
+                                                    # No effector time found, use all data (original behavior)
+                                                    well_data_filtered_calc = well_data_series
+                                                
                                                 if assay_type == "BCMA":
                                                     # For BCMA: find values >= 0.4, get max, divide by 2
-                                                    valid_values = well_data_series[well_data_series >= 0.4]
+                                                    valid_values = well_data_filtered_calc[well_data_filtered_calc >= 0.4]
                                                     threshold_text = "0.4"
                                                 elif assay_type == "CD19":
                                                     # For CD19: find values >= 0.8, get max, divide by 2
-                                                    valid_values = well_data_series[well_data_series >= 0.8]
+                                                    valid_values = well_data_filtered_calc[well_data_filtered_calc >= 0.8]
                                                     threshold_text = "0.8"
                                                 else:
                                                     # For unknown assay types, fall back to original 0.5 logic
                                                     # Find index where value is 1 (original approach)
-                                                    indices_at_1 = well_data_series[well_data_series == 1].index
+                                                    indices_at_1 = well_data_filtered_calc[well_data_filtered_calc == 1].index
                                                     if not indices_at_1.empty:
                                                         idx_at_1 = indices_at_1[0]
-                                                        well_data_after_1 = well_data_series.loc[idx_at_1:].iloc[1:]
+                                                        well_data_after_1 = well_data_filtered_calc.loc[idx_at_1:].iloc[1:]
                                                         if not well_data_after_1.empty:
                                                             idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
                                                             closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
@@ -852,7 +958,7 @@ if uploaded_file:
                                                         time_at_max_hhmmss = assay_display_df.loc[idx_max_value, "Time (hh:mm:ss)"]
 
                                                         # Find time closest to half-killing target ONLY AFTER the max value
-                                                        data_after_max = well_data_series.loc[idx_max_value:]
+                                                        data_after_max = well_data_filtered_calc.loc[idx_max_value:]
                                                         if len(data_after_max) >= 1:  # Need at least one point after max
                                                             # Only exclude the max point if there's more than one point
                                                             if len(data_after_max) > 1:
@@ -883,8 +989,8 @@ if uploaded_file:
                                                     # CORRECTED LOGIC: Determine killed status based on assay type
                                                     # Check if cells drop below half of their max value (half-killing target)
                                                     if assay_type == "BCMA":
-                                                        # Check if cells ever grow >= 0.4
-                                                        above_threshold_values = well_data_series[well_data_series >= 0.4]
+                                                        # Check if cells ever grow >= 0.4 (after effector if available)
+                                                        above_threshold_values = well_data_filtered_calc[well_data_filtered_calc >= 0.4]
                                                         if not above_threshold_values.empty:
                                                             # Calculate half-killing target (half of max value)
                                                             max_val = above_threshold_values.max()
@@ -894,12 +1000,12 @@ if uploaded_file:
                                                             idx_max = above_threshold_values.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
-                                                            values_after_max = well_data_series.loc[idx_max+1:] if idx_max < len(well_data_series) - 1 else pd.Series(dtype=float)
+                                                            values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                     elif assay_type == "CD19":
-                                                        # Check if cells ever grow >= 0.8
-                                                        above_threshold_values = well_data_series[well_data_series >= 0.8]
+                                                        # Check if cells ever grow >= 0.8 (after effector if available)
+                                                        above_threshold_values = well_data_filtered_calc[well_data_filtered_calc >= 0.8]
                                                         if not above_threshold_values.empty:
                                                             # Calculate half-killing target (half of max value)
                                                             max_val = above_threshold_values.max()
@@ -909,7 +1015,7 @@ if uploaded_file:
                                                             idx_max = above_threshold_values.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
-                                                            values_after_max = well_data_series.loc[idx_max+1:] if idx_max < len(well_data_series) - 1 else pd.Series(dtype=float)
+                                                            values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                 else:
@@ -1414,6 +1520,9 @@ if uploaded_file:
             med_sample_found = False
             local_max_criteria_pass = True
             
+            # Get effector addition time for checklist validation
+            effector_time_hours = get_effector_addition_time(excel_file) if excel_file else None
+            
             # Re-run the check logic briefly just for the checklist display variables
             if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
                  if "Time (Hour)" not in st.session_state.main_data_df.columns:
@@ -1443,11 +1552,23 @@ if uploaded_file:
                                             time_series = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
                                             if well_data_series.notna().sum() == 0: continue
                                             
-                                            global_max_value = well_data_series.max()
-                                            global_max_idx = well_data_series.idxmax()
+                                            # Filter data to only consider time points after effector addition (if available)
+                                            if effector_time_hours is not None:
+                                                after_effector_mask = time_series >= effector_time_hours
+                                                well_data_filtered = well_data_series[after_effector_mask]
+                                                time_filtered = time_series[after_effector_mask]
+                                                
+                                                if well_data_filtered.notna().sum() == 0:
+                                                    continue
+                                            else:
+                                                well_data_filtered = well_data_series
+                                                time_filtered = time_series
+                                            
+                                            global_max_value = well_data_filtered.max()
+                                            global_max_idx = well_data_filtered.idxmax()
                                             half_max_threshold = global_max_value / 2
-                                            after_max_mask = time_series > time_series.loc[global_max_idx]
-                                            data_after_max = well_data_series[after_max_mask]
+                                            after_max_mask = time_filtered > time_filtered.loc[global_max_idx]
+                                            data_after_max = well_data_filtered[after_max_mask]
                                             
                                             if data_after_max.empty: continue
                                             
