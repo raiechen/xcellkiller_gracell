@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.97"
+APP_VERSION = "0.98"
 
 # Import the necessary libraries
 import streamlit as st
@@ -14,7 +14,14 @@ import plotly.express as px # For plotting
 def get_effector_addition_time(excel_file):
     """
     Extract the time when cell effector was added from Audit Trail sheet.
-    Returns the experiment time in hours, or None if not found.
+    Returns a tuple: (experiment_time_hours, warning_message)
+    - experiment_time_hours: float or None
+    - warning_message: string or None
+    
+    Decision tree:
+    1. First priority: Look for "added effector" (case insensitive) in 'Reason' column → use largest ID
+    2. Second priority: Fall back to 'Continue Experiment' in 'Action' column → use larger ID
+    3. Warning: If more than 2 'Continue Experiment' actions found, display warning
     """
     try:
         # Check both naming conventions
@@ -25,15 +32,49 @@ def get_effector_addition_time(excel_file):
             audit_sheet_name = 'Audit_Trail'
         
         if audit_sheet_name is None:
-            return None
+            return None, None
         
         audit_df = excel_file.parse(audit_sheet_name)
+        warning_message = None
         
-        # Find all "Continue Experiment" actions
+        # PRIORITY 1: Check for "added effector" in Reason column (case insensitive)
+        # Use relaxed matching to handle typos and variations:
+        # - "added effector", "add effector", "adding effector"
+        # - "effector added", "effectors added"
+        # - "add effectors", "added efector" (typo), "added effecor" (typo)
+        # - "cell effector added", "effector addition"
+        if 'Reason' in audit_df.columns:
+            reason_lower = audit_df['Reason'].astype(str).str.lower()
+            # Match if Reason contains both "effector" (or similar typo) AND any form of "add"
+            # Use regex to handle common typos: effector, efector, effecor, effctor
+            effector_rows = audit_df[
+                reason_lower.str.contains(r'ef+[ef]?[ce]?[tc]?[o]?r', regex=True, na=False) & 
+                reason_lower.str.contains('add', na=False)
+            ]
+            
+            if not effector_rows.empty:
+                # Found effector-related entry in Reason - use largest ID
+                max_id_row = effector_rows.loc[effector_rows['ID'].idxmax()]
+                experiment_time_str = str(max_id_row['Experiment Time'])
+                
+                # Convert "HH:MM:SS" to hours
+                time_parts = experiment_time_str.split(':')
+                if len(time_parts) == 3:
+                    hours = int(time_parts[0])
+                    minutes = int(time_parts[1])
+                    seconds = int(time_parts[2])
+                    total_hours = hours + minutes / 60.0 + seconds / 3600.0
+                    return total_hours, None  # Success with primary method
+        
+        # PRIORITY 2: Fall back to "Continue Experiment" in Action column
         continue_exp = audit_df[audit_df['Action'] == 'Continue Experiment'].copy()
         
         if continue_exp.empty:
-            return None
+            return None, None
+        
+        # Check if more than 2 Continue Experiment actions
+        if len(continue_exp) > 2:
+            warning_message = f"⚠️ Warning: Found {len(continue_exp)} 'Continue Experiment' actions in Audit Trail. Using the one with the largest ID (ID: {continue_exp['ID'].max()}). Please verify this is the correct effector addition time."
         
         # Get the one with the larger ID (most recent)
         max_id_row = continue_exp.loc[continue_exp['ID'].idxmax()]
@@ -46,12 +87,12 @@ def get_effector_addition_time(excel_file):
             minutes = int(time_parts[1])
             seconds = int(time_parts[2])
             total_hours = hours + minutes / 60.0 + seconds / 3600.0
-            return total_hours
+            return total_hours, warning_message
         
-        return None
+        return None, None
     except Exception as e:
         # If anything goes wrong, return None and fall back to default behavior
-        return None
+        return None, None
 
 # Function to determine overall assay status
 def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
@@ -65,7 +106,7 @@ def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
     # Try to get cell effector addition time from Audit Trail
     effector_time_hours = None
     if excel_file is not None:
-        effector_time_hours = get_effector_addition_time(excel_file)
+        effector_time_hours, _ = get_effector_addition_time(excel_file)  # Ignore warning in this function
 
     for treatment_group, assays in extracted_treatment_data.items():
         for assay_name_key, assay_data in assays.items():
@@ -603,7 +644,11 @@ if uploaded_file:
                     required_time_cols = ["Time (Hour)", "Time (hh:mm:ss)"]
                     
                     # Get effector addition time for use in max cell index calculations
-                    effector_time_hours = get_effector_addition_time(excel_file) if excel_file else None
+                    effector_time_hours, effector_warning = get_effector_addition_time(excel_file) if excel_file else (None, None)
+                    
+                    # Display warning if there are multiple Continue Experiment actions
+                    if effector_warning:
+                        st.warning(effector_warning)
                     
                     # Check for essential time columns in main_data_df
                     missing_global_time_cols = [col for col in required_time_cols if col not in main_df_cols]
@@ -1521,7 +1566,7 @@ if uploaded_file:
             local_max_criteria_pass = True
             
             # Get effector addition time for checklist validation
-            effector_time_hours = get_effector_addition_time(excel_file) if excel_file else None
+            effector_time_hours, _ = get_effector_addition_time(excel_file) if excel_file else (None, None)  # Ignore warning here
             
             # Re-run the check logic briefly just for the checklist display variables
             if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
