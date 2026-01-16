@@ -131,7 +131,33 @@ The exported Excel file contains multiple sheets:
 
 ## Version History
 
-### Version 0.98 (Current)
+### Version 0.99 (Current)
+**Release Date**: January 16, 2026
+
+**Critical Error Handling for Ambiguous Continue Experiment Actions**:
+- **Enhanced Priority 2 Logic**: Modified handling of multiple "Continue Experiment" actions
+  - Previously: Displayed warning when >2 Continue Experiment actions found, continued processing
+  - Now: Returns **critical error** when >2 Continue Experiment actions found, stops all processing
+  - Rationale: Cannot reliably determine max cell index when >2 continuation points exist
+  
+- **Error Message**: 
+  - "Found X (more than 2) 'Continue Experiment' actions in Audit Trail. Please analyze it manually and notify management."
+  - Displayed immediately below filename
+  - No analysis results, tables, charts, or download buttons shown
+  
+- **Updated Decision Tree for Effector Time Detection**:
+  1. **PRIORITY 1**: Look for "effector" + "add" in Reason column (unchanged)
+  2. **PRIORITY 2**: Fall back to "Continue Experiment" in Action column
+     - If exactly 1 or 2 found: uses larger ID, proceeds normally
+     - **If more than 2 found**: returns error, stops processing
+  3. **PRIORITY 3**: Graceful fallback (unchanged)
+
+**Behavior Changes**:
+- Files with >2 Continue Experiment actions now require manual analysis
+- Early error detection prevents wasted processing time
+- Clear error messaging guides user to escalate to management
+
+### Version 0.98
 **Release Date**: January 13, 2026
 
 **Enhancement - Typo-Tolerant Effector Detection**:
@@ -151,7 +177,7 @@ The exported Excel file contains multiple sheets:
 2. **PRIORITY 2**: Fall back to "Continue Experiment" in Action column
    - Only used if Priority 1 finds nothing
    - Uses larger ID (most recent continuation)
-   - **Warning displayed** if more than 2 Continue Experiment actions found
+   - Warning displayed if more than 2 Continue Experiment actions found (changed to error in v0.99)
    
 3. **PRIORITY 3**: Graceful fallback
    - Returns None if no Audit Trail or detection fails
