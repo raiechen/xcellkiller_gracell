@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.98"
+APP_VERSION = "0.99"
 
 # Import the necessary libraries
 import streamlit as st
@@ -14,14 +14,16 @@ import plotly.express as px # For plotting
 def get_effector_addition_time(excel_file):
     """
     Extract the time when cell effector was added from Audit Trail sheet.
-    Returns a tuple: (experiment_time_hours, warning_message)
+    Returns a tuple: (experiment_time_hours, error_message)
     - experiment_time_hours: float or None
-    - warning_message: string or None
+    - error_message: string or None (if not None, indicates a critical error)
     
     Decision tree:
     1. First priority: Look for "added effector" (case insensitive) in 'Reason' column → use largest ID
     2. Second priority: Fall back to 'Continue Experiment' in 'Action' column → use larger ID
-    3. Warning: If more than 2 'Continue Experiment' actions found, display warning
+       - If exactly 1 or 2 found: use larger ID, proceed
+       - If more than 2 found: return error, cannot determine max cell index
+    3. Third priority: Graceful fallback to None if nothing found
     """
     try:
         # Check both naming conventions
@@ -35,7 +37,6 @@ def get_effector_addition_time(excel_file):
             return None, None
         
         audit_df = excel_file.parse(audit_sheet_name)
-        warning_message = None
         
         # PRIORITY 1: Check for "added effector" in Reason column (case insensitive)
         # Use relaxed matching to handle typos and variations:
@@ -72,9 +73,10 @@ def get_effector_addition_time(excel_file):
         if continue_exp.empty:
             return None, None
         
-        # Check if more than 2 Continue Experiment actions
+        # Check if more than 2 Continue Experiment actions - this is now an ERROR
         if len(continue_exp) > 2:
-            warning_message = f"⚠️ Warning: Found {len(continue_exp)} 'Continue Experiment' actions in Audit Trail. Using the one with the largest ID (ID: {continue_exp['ID'].max()}). Please verify this is the correct effector addition time."
+            error_message = f"Found {len(continue_exp)} (more than 2) 'Continue Experiment' actions in Audit Trail. Please analyze it manually and notify management."
+            return None, error_message
         
         # Get the one with the larger ID (most recent)
         max_id_row = continue_exp.loc[continue_exp['ID'].idxmax()]
@@ -87,7 +89,7 @@ def get_effector_addition_time(excel_file):
             minutes = int(time_parts[1])
             seconds = int(time_parts[2])
             total_hours = hours + minutes / 60.0 + seconds / 3600.0
-            return total_hours, warning_message
+            return total_hours, None
         
         return None, None
     except Exception as e:
@@ -399,6 +401,9 @@ if uploaded_file:
     # Process the uploaded file
     file_index = 0
     
+    # Flag to track if there's a critical error that stops all processing
+    has_critical_error = False
+    
     # Create a container for this file's results
     with st.container():
         st.markdown(f"## 📁 File {file_index + 1}: {uploaded_file.name}")
@@ -424,8 +429,14 @@ if uploaded_file:
 
         # Use pd.ExcelFile for efficiency, especially if accessing multiple sheets or metadata
         excel_file = pd.ExcelFile(uploaded_file)
-
-        if sheet_name not in excel_file.sheet_names:
+        
+        # Check for critical Continue Experiment error EARLY - before any processing
+        _, effector_error = get_effector_addition_time(excel_file)
+        if effector_error:
+            st.error(effector_error)
+            has_critical_error = True
+            # Stop processing this file completely - show nothing else
+        elif sheet_name not in excel_file.sheet_names:
             st.error(custom_error_message)
             st.session_state.data_frame = None # Ensure no stale data
         else:
@@ -644,11 +655,8 @@ if uploaded_file:
                     required_time_cols = ["Time (Hour)", "Time (hh:mm:ss)"]
                     
                     # Get effector addition time for use in max cell index calculations
-                    effector_time_hours, effector_warning = get_effector_addition_time(excel_file) if excel_file else (None, None)
-                    
-                    # Display warning if there are multiple Continue Experiment actions
-                    if effector_warning:
-                        st.warning(effector_warning)
+                    # Note: effector_error is already checked early in processing, so this won't have error
+                    effector_time_hours, _ = get_effector_addition_time(excel_file) if excel_file else (None, None)
                     
                     # Check for essential time columns in main_data_df
                     missing_global_time_cols = [col for col in required_time_cols if col not in main_df_cols]
@@ -1664,134 +1672,136 @@ if uploaded_file:
                 current_file_results['audit_trail_df'] = None
                 
     # --- Combined Export Results Section for All Files ---
-    st.markdown("---")
-    st.header("📊 Analysis Results Summary")
-    
-    if st.session_state.all_files_results:
-        # Display summary of file
-        st.subheader("File Processing Summary")
-        summary_data = []
-        for file_name, results in st.session_state.all_files_results.items():
-            assay_type_display = results['assay_type']
-            if results.get('positive_control') and results['positive_control'] != "None":
-                assay_type_display += f"\nPositive Sample: {results['positive_control']}"
+    # Only show results summary if there's no critical error
+    if not has_critical_error:
+        st.markdown("---")
+        st.header("📊 Analysis Results Summary")
+        
+        if st.session_state.all_files_results:
+            # Display summary of file
+            st.subheader("File Processing Summary")
+            summary_data = []
+            for file_name, results in st.session_state.all_files_results.items():
+                assay_type_display = results['assay_type']
+                if results.get('positive_control') and results['positive_control'] != "None":
+                    assay_type_display += f"\nPositive Sample: {results['positive_control']}"
             
-            summary_data.append({
-                'File Name': file_name,
-                'Assay Type': assay_type_display,
-                'Assay Status': results['assay_status'],
-                'Has Data': 'Yes' if results['closest_df'] is not None else 'No'
-            })
+                summary_data.append({
+                    'File Name': file_name,
+                    'Assay Type': assay_type_display,
+                    'Assay Status': results['assay_status'],
+                    'Has Data': 'Yes' if results['closest_df'] is not None else 'No'
+                })
         
-        summary_df = pd.DataFrame(summary_data)
-        # Add version info to the summary DataFrame for export
-        summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
+            summary_df = pd.DataFrame(summary_data)
+            # Add version info to the summary DataFrame for export
+            summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
         
-        # Add criteria information as additional columns on the right side
-        # Create empty columns first
-        summary_df[''] = ''  # Spacer column
-        summary_df['SAMPLE CRITERIA'] = ''
-        summary_df['  '] = ''  # Another spacer column
-        summary_df['CONTROL CRITERIA'] = ''
+            # Add criteria information as additional columns on the right side
+            # Create empty columns first
+            summary_df[''] = ''  # Spacer column
+            summary_df['SAMPLE CRITERIA'] = ''
+            summary_df['  '] = ''  # Another spacer column
+            summary_df['CONTROL CRITERIA'] = ''
 
-        # Fill in the sample criteria - combine both criteria into single cells
-        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
-        summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
+            # Fill in the sample criteria - combine both criteria into single cells
+            sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
+            summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
 
-        # Fill in the control criteria (Negative and Positive)
-        control_criteria_text = 'NEGATIVE CONTROL:\n1. Medium/only/CMM sample found\n2. Never drops below half-max OR recovers above half-max\n\nPOSITIVE CONTROL:\n1. Selected PC must be Valid (Passes Sample Criteria)'
-        summary_df.loc[0, 'CONTROL CRITERIA'] = control_criteria_text
+            # Fill in the control criteria (Negative and Positive)
+            control_criteria_text = 'NEGATIVE CONTROL:\n1. Medium/only/CMM sample found\n2. Never drops below half-max OR recovers above half-max\n\nPOSITIVE CONTROL:\n1. Selected PC must be Valid (Passes Sample Criteria)'
+            summary_df.loc[0, 'CONTROL CRITERIA'] = control_criteria_text
         
-        st.dataframe(summary_df)
+            st.dataframe(summary_df)
         
-        # Prepare combined data for export
-        combined_data_to_export = {}
+            # Prepare combined data for export
+            combined_data_to_export = {}
         
-        # Add file summary (ensure sheet name is within limits)
-        combined_data_to_export["File_Summary"] = summary_df
+            # Add file summary (ensure sheet name is within limits)
+            combined_data_to_export["File_Summary"] = summary_df
         
-
-
-        # Combine all print_report_df data
-        all_print_report_dfs = []
-        for file_name, results in st.session_state.all_files_results.items():
-            if results.get('print_report_df') is not None:
-                temp_df = results['print_report_df'].copy()
-                all_print_report_dfs.append(temp_df)
-        
-        if all_print_report_dfs:
-            combined_print_report_df = pd.concat(all_print_report_dfs, ignore_index=True)
-            combined_data_to_export["Print Report"] = combined_print_report_df
-
-        # Add detailed sample data from all files
-        combined_highlighting_data = {}
 
 
-        used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
-        sheet_counter = 1
+            # Combine all print_report_df data
+            all_print_report_dfs = []
+            for file_name, results in st.session_state.all_files_results.items():
+                if results.get('print_report_df') is not None:
+                    temp_df = results['print_report_df'].copy()
+                    all_print_report_dfs.append(temp_df)
         
-        for file_name, results in st.session_state.all_files_results.items():
-            if results['detailed_sample_data']:
-                file_prefix = file_name.replace('.xlsx', '').replace('.xls', '')[:10]
-                for sample_data in results['detailed_sample_data']:
-                    # Create base sheet name with file prefix
-                    base_sheet_name = f"{file_prefix}_{sample_data['sheet_name']}"[:27]  # Leave room for counter
-                    # Remove invalid characters for Excel sheet names
-                    invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
-                    for char in invalid_chars:
-                        base_sheet_name = base_sheet_name.replace(char, '_')
+            if all_print_report_dfs:
+                combined_print_report_df = pd.concat(all_print_report_dfs, ignore_index=True)
+                combined_data_to_export["Print Report"] = combined_print_report_df
+
+            # Add detailed sample data from all files
+            combined_highlighting_data = {}
+
+
+            used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
+            sheet_counter = 1
+        
+            for file_name, results in st.session_state.all_files_results.items():
+                if results['detailed_sample_data']:
+                    file_prefix = file_name.replace('.xlsx', '').replace('.xls', '')[:10]
+                    for sample_data in results['detailed_sample_data']:
+                        # Create base sheet name with file prefix
+                        base_sheet_name = f"{file_prefix}_{sample_data['sheet_name']}"[:27]  # Leave room for counter
+                        # Remove invalid characters for Excel sheet names
+                        invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
+                        for char in invalid_chars:
+                            base_sheet_name = base_sheet_name.replace(char, '_')
                     
-                    # Ensure unique sheet name
-                    sheet_name = base_sheet_name
-                    if sheet_name.lower() in [name.lower() for name in used_sheet_names]:
-                        # Add counter to make it unique
-                        sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
-                        while sheet_name.lower() in [name.lower() for name in used_sheet_names]:
-                            sheet_counter += 1
+                        # Ensure unique sheet name
+                        sheet_name = base_sheet_name
+                        if sheet_name.lower() in [name.lower() for name in used_sheet_names]:
+                            # Add counter to make it unique
                             sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
-                        sheet_counter += 1
+                            while sheet_name.lower() in [name.lower() for name in used_sheet_names]:
+                                sheet_counter += 1
+                                sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                            sheet_counter += 1
                     
-                    used_sheet_names.add(sheet_name)
-                    combined_data_to_export[sheet_name] = sample_data['dataframe']
+                        used_sheet_names.add(sheet_name)
+                        combined_data_to_export[sheet_name] = sample_data['dataframe']
                     
-                    # Add highlighting data for this sheet
-                    if sample_data['sheet_name'] in results['highlighting_data']:
-                        combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
+                        # Add highlighting data for this sheet
+                        if sample_data['sheet_name'] in results['highlighting_data']:
+                            combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
         
-        # Add Audit Trail sheet if it exists in the uploaded file
-        for file_name, results in st.session_state.all_files_results.items():
-            if results.get('audit_trail_df') is not None:
-                # Only add Audit Trail from the first file that has it
-                if 'Audit_Trail' not in combined_data_to_export:
-                    combined_data_to_export['Audit_Trail'] = results['audit_trail_df']
-                break
+            # Add Audit Trail sheet if it exists in the uploaded file
+            for file_name, results in st.session_state.all_files_results.items():
+                if results.get('audit_trail_df') is not None:
+                    # Only add Audit Trail from the first file that has it
+                    if 'Audit_Trail' not in combined_data_to_export:
+                        combined_data_to_export['Audit_Trail'] = results['audit_trail_df']
+                    break
         
-        # Download button for combined results
-        if combined_data_to_export:
-            excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
+            # Download button for combined results
+            if combined_data_to_export:
+                excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
             
-            # Generate output filename based on uploaded files
-            if len(st.session_state.all_files_results) == 1:
-                # Single file: use original name with _Rapp suffix
-                original_filename = list(st.session_state.all_files_results.keys())[0]
-                base_name = original_filename.replace('.xlsx', '').replace('.xls', '')
-                output_filename = f"{base_name}_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                # Generate output filename based on uploaded files
+                if len(st.session_state.all_files_results) == 1:
+                    # Single file: use original name with _Rapp suffix
+                    original_filename = list(st.session_state.all_files_results.keys())[0]
+                    base_name = original_filename.replace('.xlsx', '').replace('.xls', '')
+                    output_filename = f"{base_name}_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                else:
+                    # Multiple files: use first file's name with _combined suffix
+                    first_filename = list(st.session_state.all_files_results.keys())[0]
+                    base_name = first_filename.replace('.xlsx', '').replace('.xls', '')
+                    output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            
+                st.download_button(
+                    label="📥 Download Analysis Results", 
+                    data=excel_bytes_combined,
+                    file_name=output_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             else:
-                # Multiple files: use first file's name with _combined suffix
-                first_filename = list(st.session_state.all_files_results.keys())[0]
-                base_name = first_filename.replace('.xlsx', '').replace('.xls', '')
-                output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            
-            st.download_button(
-                label="📥 Download Analysis Results", 
-                data=excel_bytes_combined,
-                file_name=output_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.caption("No data available to export.")
         else:
-            st.caption("No data available to export.")
-    else:
-        st.info("No file has been processed yet. Please upload an Excel file to see results.")
+            st.info("No file has been processed yet. Please upload an Excel file to see results.")
 
 # --- End of Combined Export Results Section ---
 else:
