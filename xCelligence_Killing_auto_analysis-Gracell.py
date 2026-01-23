@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.99"
+APP_VERSION = "0.991"
 
 # Import the necessary libraries
 import streamlit as st
@@ -9,21 +9,22 @@ import numpy as np
 import datetime # For timestamping the export file
 import re # For parsing Input ID
 import plotly.express as px # For plotting
+import plotly.graph_objects as go # For advanced plotting with markers
 
 # Function to extract cell effector addition time from Audit Trail
 def get_effector_addition_time(excel_file):
     """
     Extract the time when cell effector was added from Audit Trail sheet.
-    Returns a tuple: (experiment_time_hours, error_message)
+    Returns a tuple: (experiment_time_hours, warning_message)
     - experiment_time_hours: float or None
-    - error_message: string or None (if not None, indicates a critical error)
+    - warning_message: string or None (if not None, indicates a warning but processing continues)
     
     Decision tree:
     1. First priority: Look for "added effector" (case insensitive) in 'Reason' column → use largest ID
-    2. Second priority: Fall back to 'Continue Experiment' in 'Action' column → use larger ID
-       - If exactly 1 or 2 found: use larger ID, proceed
-       - If more than 2 found: return error, cannot determine max cell index
-    3. Third priority: Graceful fallback to None if nothing found
+    2. Second priority: Fall back to 'Continue Experiment' in 'Action' column
+       - Must have exactly 2 entries
+       - If not exactly 2 (0, 1, or >2): fall back to Priority 3 with warning
+    3. Third priority: Graceful fallback to None with warning if Audit Trail not found
     """
     try:
         # Check both naming conventions
@@ -34,7 +35,8 @@ def get_effector_addition_time(excel_file):
             audit_sheet_name = 'Audit_Trail'
         
         if audit_sheet_name is None:
-            return None, None
+            warning_message = "⚠️ WARNING: Audit Trail sheet not found. Cannot determine effector addition time. Proceeding without effector time filtering."
+            return None, warning_message
         
         audit_df = excel_file.parse(audit_sheet_name)
         
@@ -70,13 +72,10 @@ def get_effector_addition_time(excel_file):
         # PRIORITY 2: Fall back to "Continue Experiment" in Action column
         continue_exp = audit_df[audit_df['Action'] == 'Continue Experiment'].copy()
         
-        if continue_exp.empty:
-            return None, None
-        
-        # Check if more than 2 Continue Experiment actions - this is now an ERROR
-        if len(continue_exp) > 2:
-            error_message = f"Found {len(continue_exp)} (more than 2) 'Continue Experiment' actions in Audit Trail. Please analyze it manually and notify management."
-            return None, error_message
+        # Must have EXACTLY 2 Continue Experiment entries
+        if len(continue_exp) != 2:
+            warning_message = f"⚠️ WARNING: Expected exactly 2 'Continue Experiment' actions in Audit Trail, but found {len(continue_exp)}. Cannot determine effector addition time. Proceeding without effector time filtering."
+            return None, warning_message
         
         # Get the one with the larger ID (most recent)
         max_id_row = continue_exp.loc[continue_exp['ID'].idxmax()]
@@ -93,8 +92,9 @@ def get_effector_addition_time(excel_file):
         
         return None, None
     except Exception as e:
-        # If anything goes wrong, return None and fall back to default behavior
-        return None, None
+        # If anything goes wrong, return None with warning
+        warning_message = f"⚠️ WARNING: Error reading Audit Trail ({str(e)}). Proceeding without effector time filtering."
+        return None, warning_message
 
 # Function to determine overall assay status
 def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
@@ -144,12 +144,14 @@ def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
                     continue
 
                 # This Med sample determines the overall status.
+                # NEW APPROACH: Average CI values across wells at each time point, then find max
+                well_data_dict = {}
+                
                 for well_col_name in valid_well_columns_for_assay:
                     try:
                         well_data_series = pd.to_numeric(main_df[well_col_name], errors='coerce')
                         time_series = pd.to_numeric(main_df["Time (Hour)"], errors='coerce')
 
-                        # NEW LOGIC: Use global maximum across all time points
                         if well_data_series.notna().sum() == 0:
                             continue  # No valid numeric data
 
@@ -158,46 +160,41 @@ def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
                             # Only consider data after effector addition time
                             after_effector_mask = time_series >= effector_time_hours
                             well_data_filtered = well_data_series[after_effector_mask]
-                            time_filtered = time_series[after_effector_mask]
                             
                             if well_data_filtered.notna().sum() == 0:
                                 continue  # No valid data after effector addition
                         else:
                             # No effector time found, use all data (original behavior)
                             well_data_filtered = well_data_series
-                            time_filtered = time_series
 
-                        # Find global maximum in the filtered data
-                        global_max_value = well_data_filtered.max()
-                        global_max_idx = well_data_filtered.idxmax()
+                        # Store the filtered series for this well
+                        well_data_dict[well_col_name] = well_data_filtered
 
-                        # Calculate half-max threshold
-                        half_max_threshold = global_max_value / 2
+                    except (ValueError, TypeError):
+                        return "Fail"  # Processing error
 
-                        # Find data after the global max time
-                        after_max_mask = time_filtered > time_filtered.loc[global_max_idx]
-                        data_after_max = well_data_filtered[after_max_mask]
-
-                        if data_after_max.empty:
-                            continue  # No data after max time
-
-                        # NEW CRITERIA: Check half-max recovery
-                        drops_below_half = (data_after_max < half_max_threshold).any()
-
-                        if drops_below_half:
-                            # If it drops below half-max, check if it recovers at the last time point
-                            last_value = data_after_max.iloc[-1]
-                            if last_value <= half_max_threshold:
-                                return "Fail"  # Cell index dropped below half and didn't recover
-                            # If last value is above half-max, it recovered - continue checking other wells
-                        # If never drops below half-max, this well passes - continue checking other wells
-
-                    except (ValueError, TypeError): # Keep it generic to catch any processing error for the column
-                        return "Fail"
-
-                # If all valid_well_columns_for_assay for this Med sample were processed
-                # and none triggered a "Fail" based on the new logic, then this Med sample (and thus the assay) is "Pass".
-                return "Pass"
+                # Check if we collected any valid data
+                if not well_data_dict:
+                    return "Fail"
+                
+                # Create DataFrame from all wells to average across wells at each time point
+                wells_df = pd.DataFrame(well_data_dict)
+                
+                # Calculate average CI across wells for each time point (row-wise mean)
+                avg_ci_per_timepoint = wells_df.mean(axis=1)
+                
+                # Find the maximum of the averaged CI values
+                avg_max_ci = avg_ci_per_timepoint.max()
+                half_avg_max = avg_max_ci / 2
+                
+                # Get the average CI at the last time point
+                avg_last_ci = avg_ci_per_timepoint.iloc[-1]
+                
+                # Compare average last CI to half of average max CI
+                if avg_last_ci > half_avg_max:
+                    return "Pass"  # Recovers above half-max at last time point
+                else:
+                    return "Fail"  # Does not recover above half-max
 
     # If the loops complete, no "Med" sample was found. This is a failure condition
     return "Fail"
@@ -401,9 +398,6 @@ if uploaded_file:
     # Process the uploaded file
     file_index = 0
     
-    # Flag to track if there's a critical error that stops all processing
-    has_critical_error = False
-    
     # Create a container for this file's results
     with st.container():
         st.markdown(f"## 📁 File {file_index + 1}: {uploaded_file.name}")
@@ -430,13 +424,13 @@ if uploaded_file:
         # Use pd.ExcelFile for efficiency, especially if accessing multiple sheets or metadata
         excel_file = pd.ExcelFile(uploaded_file)
         
-        # Check for critical Continue Experiment error EARLY - before any processing
-        _, effector_error = get_effector_addition_time(excel_file)
-        if effector_error:
-            st.error(effector_error)
-            has_critical_error = True
-            # Stop processing this file completely - show nothing else
-        elif sheet_name not in excel_file.sheet_names:
+        # Check for effector addition time warning EARLY - show warning but continue processing
+        _, effector_warning = get_effector_addition_time(excel_file)
+        if effector_warning:
+            st.warning(effector_warning)
+            # Continue processing - do NOT stop
+        
+        if sheet_name not in excel_file.sheet_names:
             st.error(custom_error_message)
             st.session_state.data_frame = None # Ensure no stale data
         else:
@@ -759,33 +753,30 @@ if uploaded_file:
                                                     # No effector time found, use all data (original behavior)
                                                     well_data_filtered_hl = well_data_series_hl
 
-                                                if assay_type == "BCMA":
-                                                    valid_values = well_data_filtered_hl[well_data_filtered_hl >= 0.4]
-                                                elif assay_type == "CD19":
-                                                    valid_values = well_data_filtered_hl[well_data_filtered_hl >= 0.8]
+                                                if assay_type == "BCMA" or assay_type == "CD19":
+                                                    # Use all data (no threshold filtering)
+                                                    if well_data_filtered_hl.notna().sum() > 0:
+                                                        max_value = well_data_filtered_hl.max()
+                                                        half_killing_target = max_value / 2
+
+                                                        # Find index of max value
+                                                        idx_max_value = well_data_filtered_hl.idxmax()
+
+                                                        # Only search for half-killing target AFTER the max value
+                                                        data_after_max = well_data_filtered_hl.loc[idx_max_value:]
+                                                        if len(data_after_max) >= 1:  # Need at least one point after max
+                                                            # Only exclude the max point if there's more than one point
+                                                            if len(data_after_max) > 1:
+                                                                data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                            if not data_after_max.empty:
+                                                                # IMPORTANT: Only highlight if cells actually DROP BELOW half-killing target
+                                                                # Don't highlight if they stay above it
+                                                                if (data_after_max < half_killing_target).any():
+                                                                    idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                                    half_killing_indices[well_col_name_hl] = idx_closest_to_target
                                                 else:
                                                     # Default/unknown assay type - skip highlighting
                                                     continue
-
-                                                if not valid_values.empty:
-                                                    max_value = valid_values.max()
-                                                    half_killing_target = max_value / 2
-
-                                                    # Find index of max value within the valid values (above threshold)
-                                                    idx_max_value = valid_values.idxmax()
-
-                                                    # Only search for half-killing target AFTER the max value
-                                                    data_after_max = well_data_filtered_hl.loc[idx_max_value:]
-                                                    if len(data_after_max) >= 1:  # Need at least one point after max
-                                                        # Only exclude the max point if there's more than one point
-                                                        if len(data_after_max) > 1:
-                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-                                                        if not data_after_max.empty:
-                                                            # IMPORTANT: Only highlight if cells actually DROP BELOW half-killing target
-                                                            # Don't highlight if they stay above it
-                                                            if (data_after_max < half_killing_target).any():
-                                                                idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
-                                                                half_killing_indices[well_col_name_hl] = idx_closest_to_target
                                             except Exception:
                                                 continue  # Skip this column if there's an error
                                     
@@ -966,12 +957,12 @@ if uploaded_file:
                                                     well_data_filtered_calc = well_data_series
                                                 
                                                 if assay_type == "BCMA":
-                                                    # For BCMA: find values >= 0.4, get max, divide by 2
-                                                    valid_values = well_data_filtered_calc[well_data_filtered_calc >= 0.4]
+                                                    # For BCMA: use all data, check if max >= 0.4
+                                                    threshold_value = 0.4
                                                     threshold_text = "0.4"
                                                 elif assay_type == "CD19":
-                                                    # For CD19: find values >= 0.8, get max, divide by 2
-                                                    valid_values = well_data_filtered_calc[well_data_filtered_calc >= 0.8]
+                                                    # For CD19: use all data, check if max >= 0.8
+                                                    threshold_value = 0.8
                                                     threshold_text = "0.8"
                                                 else:
                                                     # For unknown assay types, fall back to original 0.5 logic
@@ -1000,13 +991,17 @@ if uploaded_file:
                                                         continue
                                             
                                                 if assay_type in ["BCMA", "CD19"]:
-                                                    if not valid_values.empty:
-                                                        # Find max value and calculate half-killing target
-                                                        max_value = valid_values.max()
+                                                    if well_data_filtered_calc.notna().sum() > 0:
+                                                        # Find max value from ALL data (no threshold filtering)
+                                                        max_value = well_data_filtered_calc.max()
                                                         half_killing_target = max_value / 2
+                                                        
+                                                        # Check if threshold is met and warn if not
+                                                        if max_value < threshold_value:
+                                                            st.warning(f"⚠️ WARNING: {well_col} ({assay_name}) max CI ({max_value:.3f}) is below threshold ({threshold_text})")
 
-                                                        # Find index of max value within the valid values (above threshold)
-                                                        idx_max_value = valid_values.idxmax()
+                                                        # Find index of max value
+                                                        idx_max_value = well_data_filtered_calc.idxmax()
                                                         time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
                                                         time_at_max_hhmmss = assay_display_df.loc[idx_max_value, "Time (hh:mm:ss)"]
 
@@ -1042,38 +1037,33 @@ if uploaded_file:
                                                     # CORRECTED LOGIC: Determine killed status based on assay type
                                                     # Check if cells drop below half of their max value (half-killing target)
                                                     if assay_type == "BCMA":
-                                                        # Check if cells ever grow >= 0.4 (after effector if available)
-                                                        above_threshold_values = well_data_filtered_calc[well_data_filtered_calc >= 0.4]
-                                                        if not above_threshold_values.empty:
+                                                        # Use all data (no threshold filtering)
+                                                        if well_data_filtered_calc.notna().sum() > 0:
                                                             # Calculate half-killing target (half of max value)
-                                                            max_val = above_threshold_values.max()
+                                                            max_val = well_data_filtered_calc.max()
                                                             half_max_threshold = max_val / 2
 
                                                             # Find index of max value
-                                                            idx_max = above_threshold_values.idxmax()
+                                                            idx_max = well_data_filtered_calc.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
                                                             values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                     elif assay_type == "CD19":
-                                                        # Check if cells ever grow >= 0.8 (after effector if available)
-                                                        above_threshold_values = well_data_filtered_calc[well_data_filtered_calc >= 0.8]
-                                                        if not above_threshold_values.empty:
+                                                        # Use all data (no threshold filtering)
+                                                        if well_data_filtered_calc.notna().sum() > 0:
                                                             # Calculate half-killing target (half of max value)
-                                                            max_val = above_threshold_values.max()
+                                                            max_val = well_data_filtered_calc.max()
                                                             half_max_threshold = max_val / 2
 
                                                             # Find index of max value
-                                                            idx_max = above_threshold_values.idxmax()
+                                                            idx_max = well_data_filtered_calc.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
                                                             values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
-                                                else:
-                                                    st.caption(f"For {assay_name_key} - Well {well_col_name_calc}: No values found >= {threshold_text} for {assay_type} calculation.")
-                                                    continue
                                                     
                                             except (ValueError, KeyError, IndexError) as e:
                                                 st.warning(f"Error calculating half-killing time for well {well_col_name_calc}: {str(e)}")
@@ -1160,6 +1150,12 @@ if uploaded_file:
                     
                     # Prepare data for plotting
                     plot_data = []
+                    marker_data = []  # For max and half-max markers
+                    
+                    # Define a color palette for samples
+                    color_palette = px.colors.qualitative.Plotly  # Use Plotly's qualitative colors
+                    sample_color_map = {}  # Map sample names to colors
+                    color_index = 0
                     
                     # Iterate through extracted treatment data to gather plot data
                     if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
@@ -1167,11 +1163,16 @@ if uploaded_file:
                         if "Time (Hour)" in st.session_state.main_data_df.columns:
                             time_values = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
                             
+                            # First pass: assign colors to each sample
                             for treatment_group, assays in st.session_state.extracted_treatment_data.items():
                                 for sample_name, assay_data in assays.items():
-                                    # Skip MED/CMM/Only samples from plot if desired, or keep them. 
-                                    # Usually plots include everything for visualization. Let's include them.
-                                    
+                                    if sample_name not in sample_color_map:
+                                        sample_color_map[sample_name] = color_palette[color_index % len(color_palette)]
+                                        color_index += 1
+                            
+                            # Second pass: collect plot data with colors
+                            for treatment_group, assays in st.session_state.extracted_treatment_data.items():
+                                for sample_name, assay_data in assays.items():
                                     # Handle both old format (list) and new format (dict)
                                     if isinstance(assay_data, dict):
                                         input_ids = assay_data.get('input_ids', [])
@@ -1185,15 +1186,7 @@ if uploaded_file:
                                         try:
                                             well_data = pd.to_numeric(st.session_state.main_data_df[well_col], errors='coerce')
                                             
-                                            # Create a DataFrame for this well's trace
-                                            # We need Time, Cell Index, and a Legend Label
-                                            # Legend Label format: "Well ID (Sample Name)" e.g., "B2 (Sample Name)"
-                                            # well_col is usually the Well ID (e.g., "B2" or "Y (B2)") depending on how it was parsed.
-                                            # Based on earlier code: layout_df['Input ID'] = "Y (" + layout_df['Well'] + ")"
-                                            # And potential_column_names comes from input_ids.
-                                            # So well_col might be "Y (B2)". 
-                                            # Let's try to extract just the well part if it looks like "Y (..)" or use it as is.
-                                            
+                                            # Extract well label
                                             well_label = well_col
                                             match = re.search(r"Y \((.*?)\)", well_col)
                                             if match:
@@ -1201,14 +1194,69 @@ if uploaded_file:
                                             
                                             legend_label = f"{well_label} ({sample_name})"
                                             
-                                            # We can create a temporary DF or just append to list
-                                            # Appending to list is more efficient than repeated concat
+                                            # Skip marker calculation for MED/CMM/Only samples (negative controls)
+                                            is_negative_control = (
+                                                sample_name.upper().startswith("MED") or 
+                                                sample_name.upper().startswith("CMM") or 
+                                                re.search(r"\bonly\b", sample_name, flags=re.IGNORECASE)
+                                            )
+                                            
+                                            if not is_negative_control:
+                                                # Calculate max and half-max for this well (skip for negative controls)
+                                                # Get effector time for filtering
+                                                effector_time_hours, _ = get_effector_addition_time(excel_file) if excel_file else (None, None)
+                                                
+                                                # Filter data after effector addition if available
+                                                if effector_time_hours is not None:
+                                                    after_effector_mask = time_values >= effector_time_hours
+                                                    well_data_filtered = well_data[after_effector_mask]
+                                                    time_filtered = time_values[after_effector_mask]
+                                                else:
+                                                    well_data_filtered = well_data
+                                                    time_filtered = time_values
+                                                
+                                                # Find max value and its time
+                                                if well_data_filtered.notna().sum() > 0:
+                                                    max_idx = well_data_filtered.idxmax()
+                                                    max_value = well_data_filtered.loc[max_idx]
+                                                    max_time = time_filtered.loc[max_idx]
+                                                    half_max_value = max_value / 2
+                                                    
+                                                    # Find half-max point (after max)
+                                                    data_after_max = well_data_filtered.loc[max_idx:]
+                                                    if len(data_after_max) > 1:
+                                                        data_after_max = data_after_max.iloc[1:]  # Exclude max point
+                                                        if not data_after_max.empty:
+                                                            half_idx = (data_after_max - half_max_value).abs().idxmin()
+                                                            half_max_time = time_filtered.loc[half_idx]
+                                                            half_max_actual_value = well_data_filtered.loc[half_idx]
+                                                            
+                                                            # Add half-max marker
+                                                            marker_data.append({
+                                                                "Time (Hour)": half_max_time,
+                                                                "Cell Index": half_max_actual_value,
+                                                                "Type": "Half-Max",
+                                                                "Legend": legend_label,
+                                                                "Sample": sample_name
+                                                            })
+                                                    
+                                                    # Add max marker
+                                                    marker_data.append({
+                                                        "Time (Hour)": max_time,
+                                                        "Cell Index": max_value,
+                                                        "Type": "Max",
+                                                        "Legend": legend_label,
+                                                        "Sample": sample_name
+                                                    })
+                                            
+                                            # Collect all time series data
                                             for t, val in zip(time_values, well_data):
                                                 if pd.notna(t) and pd.notna(val):
                                                     plot_data.append({
                                                         "Time (Hour)": t,
                                                         "Cell Index": val,
-                                                        "Legend": legend_label
+                                                        "Legend": legend_label,
+                                                        "Sample": sample_name
                                                     })
                                         except Exception:
                                             continue
@@ -1216,26 +1264,88 @@ if uploaded_file:
                     if plot_data:
                         plot_df = pd.DataFrame(plot_data)
                         
-                        # Create interactive line plot
-                        fig = px.line(
-                            plot_df, 
-                            x="Time (Hour)", 
-                            y="Cell Index", 
-                            color="Legend",
-                            title=f"Cell Index vs Time - {uploaded_file.name}",
-                            markers=True # Add markers as seen in the screenshot example (dots)
-                        )
+                        # Create figure manually using graph_objects for better control
+                        fig = go.Figure()
                         
-                        # Customize layout to match the requested style (cleaner)
-                        fig.update_traces(mode='lines+markers', marker=dict(size=3)) # Smaller markers
+                        # Add traces for each well with sample-based colors
+                        for legend_label in plot_df["Legend"].unique():
+                            trace_data = plot_df[plot_df["Legend"] == legend_label]
+                            sample_name = trace_data["Sample"].iloc[0]
+                            
+                            fig.add_trace(go.Scatter(
+                                x=trace_data["Time (Hour)"],
+                                y=trace_data["Cell Index"],
+                                mode='lines+markers',
+                                name=legend_label,
+                                line=dict(color=sample_color_map[sample_name]),
+                                marker=dict(size=3, color=sample_color_map[sample_name]),
+                                showlegend=True
+                            ))
+                        
+                        # Add max and half-max markers
+                        if marker_data:
+                            marker_df = pd.DataFrame(marker_data)
+                            
+                            # Add ALL Max markers in a single trace for better visibility
+                            max_markers = marker_df[marker_df["Type"] == "Max"]
+                            if not max_markers.empty:
+                                # Create arrays of colors matching each marker's sample
+                                marker_colors = [sample_color_map[sample] for sample in max_markers["Sample"]]
+                                
+                                fig.add_trace(go.Scatter(
+                                    x=max_markers["Time (Hour)"],
+                                    y=max_markers["Cell Index"],
+                                    mode='markers',
+                                    name='Max Points',
+                                    marker=dict(
+                                        size=12,
+                                        color=marker_colors,
+                                        symbol='star',
+                                        line=dict(width=2, color='black'),
+                                        opacity=0.9
+                                    ),
+                                    showlegend=False,
+                                    hovertemplate='<b>Max Point</b><br>%{text}<br>Time: %{x:.2f} hrs<br>CI: %{y:.3f}<extra></extra>',
+                                    text=max_markers["Legend"]
+                                ))
+                            
+                            # Add ALL Half-Max markers in a single trace
+                            half_markers = marker_df[marker_df["Type"] == "Half-Max"]
+                            if not half_markers.empty:
+                                # Create arrays of colors matching each marker's sample
+                                marker_colors = [sample_color_map[sample] for sample in half_markers["Sample"]]
+                                
+                                fig.add_trace(go.Scatter(
+                                    x=half_markers["Time (Hour)"],
+                                    y=half_markers["Cell Index"],
+                                    mode='markers',
+                                    name='Half-Max Points',
+                                    marker=dict(
+                                        size=12,
+                                        color=marker_colors,
+                                        symbol='diamond',
+                                        line=dict(width=2, color='black'),
+                                        opacity=0.9
+                                    ),
+                                    showlegend=False,
+                                    hovertemplate='<b>Half-Max Point</b><br>%{text}<br>Time: %{x:.2f} hrs<br>CI: %{y:.3f}<extra></extra>',
+                                    text=half_markers["Legend"]
+                                ))
+                        
+                        # Customize layout
                         fig.update_layout(
+                            title=f"Cell Index vs Time - {uploaded_file.name}",
                             xaxis_title="Time (hrs)",
                             yaxis_title="Cell Index",
-                            legend_title_text="", # Remove legend title as per screenshot example style (usually just list)
-                            hovermode="x unified" # nice hover effect
+                            legend_title_text="",
+                            hovermode="x unified",
+                            height=600
                         )
                         
                         st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Add legend explanation
+                        st.markdown("**Legend:** ⭐ = Max point, ◆ = Half-Max point")
                     else:
                         st.info("No valid data available for plotting.")
 
@@ -1320,39 +1430,46 @@ if uploaded_file:
                                                 elif "bcma" in uploaded_file.name.lower():
                                                     assay_type = "BCMA"
 
-                                            # Get valid values based on assay type
-                                            if assay_type == "BCMA":
-                                                valid_values = well_data_series[well_data_series >= 0.4]
-                                            elif assay_type == "CD19":
-                                                valid_values = well_data_series[well_data_series >= 0.8]
+                                            # Filter data to only consider time points after effector addition (if available)
+                                            effector_time_hours, _ = get_effector_addition_time(excel_file) if excel_file else (None, None)
+                                            if effector_time_hours is not None and "Time (Hour)" in st.session_state.main_data_df.columns:
+                                                time_series_recovery = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+                                                after_effector_mask = time_series_recovery >= effector_time_hours
+                                                well_data_filtered_recovery = well_data_series[after_effector_mask]
+                                            else:
+                                                # No effector time found, use all data
+                                                well_data_filtered_recovery = well_data_series
+
+                                            # Use filtered data for recovery check
+                                            if assay_type == "BCMA" or assay_type == "CD19":
+                                                # Use all data (no threshold filtering)
+                                                if well_data_filtered_recovery.notna().sum() > 0:
+                                                    # Find max value and calculate half-max threshold
+                                                    max_value = well_data_filtered_recovery.max()
+                                                    half_max_threshold = max_value / 2
+
+                                                    # Find index of max value
+                                                    idx_max_value = well_data_filtered_recovery.idxmax()
+
+                                                    # Get data after max point
+                                                    data_after_max = well_data_filtered_recovery.loc[idx_max_value:]
+                                                    if len(data_after_max) >= 1:
+                                                        # Only exclude the max point if there's more than one point
+                                                        if len(data_after_max) > 1:
+                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+
+                                                        if not data_after_max.empty:
+                                                            # Check if cells drop below half-max
+                                                            drops_below_half = (data_after_max < half_max_threshold).any()
+
+                                                            if drops_below_half:
+                                                                # Check if last value is above half-max (recovery)
+                                                                last_value = data_after_max.iloc[-1]
+                                                                if last_value > half_max_threshold:
+                                                                    has_recovery = True
+                                                                    break  # Found recovery, no need to check other wells
                                             else:
                                                 continue  # Skip unknown assay types
-
-                                            if not valid_values.empty:
-                                                # Find max value and calculate half-max threshold
-                                                max_value = valid_values.max()
-                                                half_max_threshold = max_value / 2
-
-                                                # Find index of max value
-                                                idx_max_value = valid_values.idxmax()
-
-                                                # Get data after max point
-                                                data_after_max = well_data_series.loc[idx_max_value:]
-                                                if len(data_after_max) >= 1:
-                                                    # Only exclude the max point if there's more than one point
-                                                    if len(data_after_max) > 1:
-                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-
-                                                    if not data_after_max.empty:
-                                                        # Check if cells drop below half-max
-                                                        drops_below_half = (data_after_max < half_max_threshold).any()
-
-                                                        if drops_below_half:
-                                                            # Check if last value is above half-max (recovery)
-                                                            last_value = data_after_max.iloc[-1]
-                                                            if last_value > half_max_threshold:
-                                                                has_recovery = True
-                                                                break  # Found recovery, no need to check other wells
                                         except Exception:
                                             continue
 
@@ -1599,6 +1716,9 @@ if uploaded_file:
                                 valid_well_columns = [name for name in potential_column_names if name in st.session_state.main_data_df.columns]
                                 
                                 if valid_well_columns:
+                                    # NEW APPROACH: Average CI values across wells at each time point, then find max
+                                    well_data_dict = {}
+                                    
                                     for well_col_name in valid_well_columns:
                                         try:
                                             well_data_series = pd.to_numeric(st.session_state.main_data_df[well_col_name], errors='coerce')
@@ -1609,29 +1729,37 @@ if uploaded_file:
                                             if effector_time_hours is not None:
                                                 after_effector_mask = time_series >= effector_time_hours
                                                 well_data_filtered = well_data_series[after_effector_mask]
-                                                time_filtered = time_series[after_effector_mask]
                                                 
                                                 if well_data_filtered.notna().sum() == 0:
                                                     continue
                                             else:
                                                 well_data_filtered = well_data_series
-                                                time_filtered = time_series
                                             
-                                            global_max_value = well_data_filtered.max()
-                                            global_max_idx = well_data_filtered.idxmax()
-                                            half_max_threshold = global_max_value / 2
-                                            after_max_mask = time_filtered > time_filtered.loc[global_max_idx]
-                                            data_after_max = well_data_filtered[after_max_mask]
-                                            
-                                            if data_after_max.empty: continue
-                                            
-                                            drops_below_half = (data_after_max < half_max_threshold).any()
-                                            if drops_below_half:
-                                                last_value = data_after_max.iloc[-1]
-                                                if last_value <= half_max_threshold:
-                                                    local_max_criteria_pass = False
+                                            # Store the filtered series for this well
+                                            well_data_dict[well_col_name] = well_data_filtered
                                         except:
                                             local_max_criteria_pass = False
+                                    
+                                    # Check if we collected any valid data
+                                    if well_data_dict:
+                                        # Create DataFrame from all wells to average across wells at each time point
+                                        wells_df = pd.DataFrame(well_data_dict)
+                                        
+                                        # Calculate average CI across wells for each time point (row-wise mean)
+                                        avg_ci_per_timepoint = wells_df.mean(axis=1)
+                                        
+                                        # Find the maximum of the averaged CI values
+                                        avg_max_ci = avg_ci_per_timepoint.max()
+                                        half_avg_max = avg_max_ci / 2
+                                        
+                                        # Get the average CI at the last time point
+                                        avg_last_ci = avg_ci_per_timepoint.iloc[-1]
+                                        
+                                        # Fail if average last CI is not above half of average max CI
+                                        if avg_last_ci <= half_avg_max:
+                                            local_max_criteria_pass = False
+                                    else:
+                                        local_max_criteria_pass = False
             
             if not med_sample_found:
                 local_max_criteria_pass = False
@@ -1644,7 +1772,7 @@ if uploaded_file:
                 with col1: st.markdown("1. Medium/only/CMM sample found in data")
                 with col2: st.markdown("✅ Pass" if med_sample_found else "❌ Fail")
                 
-                with col1: st.markdown("2. Medium/only/CMM behavior check")
+                with col1: st.markdown("2. Avg CI at last timepoint > Avg Max CI / 2")
                 with col2: st.markdown("✅ Pass" if local_max_criteria_pass else "❌ Fail")
                 
                 with col1: st.markdown("3. Positive Control Selected and Valid")
@@ -1672,136 +1800,134 @@ if uploaded_file:
                 current_file_results['audit_trail_df'] = None
                 
     # --- Combined Export Results Section for All Files ---
-    # Only show results summary if there's no critical error
-    if not has_critical_error:
-        st.markdown("---")
-        st.header("📊 Analysis Results Summary")
+    st.markdown("---")
+    st.header("📊 Analysis Results Summary")
         
-        if st.session_state.all_files_results:
-            # Display summary of file
-            st.subheader("File Processing Summary")
-            summary_data = []
-            for file_name, results in st.session_state.all_files_results.items():
-                assay_type_display = results['assay_type']
-                if results.get('positive_control') and results['positive_control'] != "None":
-                    assay_type_display += f"\nPositive Sample: {results['positive_control']}"
+    if st.session_state.all_files_results:
+        # Display summary of file
+        st.subheader("File Processing Summary")
+        summary_data = []
+        for file_name, results in st.session_state.all_files_results.items():
+            assay_type_display = results['assay_type']
+            if results.get('positive_control') and results['positive_control'] != "None":
+                assay_type_display += f"\nPositive Sample: {results['positive_control']}"
             
-                summary_data.append({
-                    'File Name': file_name,
-                    'Assay Type': assay_type_display,
-                    'Assay Status': results['assay_status'],
-                    'Has Data': 'Yes' if results['closest_df'] is not None else 'No'
-                })
+            summary_data.append({
+                'File Name': file_name,
+                'Assay Type': assay_type_display,
+                'Assay Status': results['assay_status'],
+                'Has Data': 'Yes' if results['closest_df'] is not None else 'No'
+            })
         
-            summary_df = pd.DataFrame(summary_data)
-            # Add version info to the summary DataFrame for export
-            summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
+        summary_df = pd.DataFrame(summary_data)
+        # Add version info to the summary DataFrame for export
+        summary_df.insert(0, 'App Version', f'v{APP_VERSION}')
         
-            # Add criteria information as additional columns on the right side
-            # Create empty columns first
-            summary_df[''] = ''  # Spacer column
-            summary_df['SAMPLE CRITERIA'] = ''
-            summary_df['  '] = ''  # Another spacer column
-            summary_df['CONTROL CRITERIA'] = ''
+        # Add criteria information as additional columns on the right side
+        # Create empty columns first
+        summary_df[''] = ''  # Spacer column
+        summary_df['SAMPLE CRITERIA'] = ''
+        summary_df['  '] = ''  # Another spacer column
+        summary_df['CONTROL CRITERIA'] = ''
 
-            # Fill in the sample criteria - combine both criteria into single cells
-            sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
-            summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
+        # Fill in the sample criteria - combine both criteria into single cells
+        sample_criteria_text = '1. %CV <= 30%\n2. Killed below half max cell index = Yes for all wells\n3. Average half-killing time <= 12 hours\n4. Cell index does NOT recover above half-max at last time point'
+        summary_df.loc[0, 'SAMPLE CRITERIA'] = sample_criteria_text
 
-            # Fill in the control criteria (Negative and Positive)
-            control_criteria_text = 'NEGATIVE CONTROL:\n1. Medium/only/CMM sample found\n2. Never drops below half-max OR recovers above half-max\n\nPOSITIVE CONTROL:\n1. Selected PC must be Valid (Passes Sample Criteria)'
-            summary_df.loc[0, 'CONTROL CRITERIA'] = control_criteria_text
+        # Fill in the control criteria (Negative and Positive)
+        control_criteria_text = 'NEGATIVE CONTROL:\n1. Medium/only/CMM sample found\n2. Average CI at last time point > Average Max CI / 2\n\nPOSITIVE CONTROL:\n1. Selected PC must be Valid (Passes Sample Criteria)'
+        summary_df.loc[0, 'CONTROL CRITERIA'] = control_criteria_text
         
-            st.dataframe(summary_df)
+        st.dataframe(summary_df)
         
-            # Prepare combined data for export
-            combined_data_to_export = {}
+        # Prepare combined data for export
+        combined_data_to_export = {}
         
-            # Add file summary (ensure sheet name is within limits)
-            combined_data_to_export["File_Summary"] = summary_df
+        # Add file summary (ensure sheet name is within limits)
+        combined_data_to_export["File_Summary"] = summary_df
         
-
-
-            # Combine all print_report_df data
-            all_print_report_dfs = []
-            for file_name, results in st.session_state.all_files_results.items():
-                if results.get('print_report_df') is not None:
-                    temp_df = results['print_report_df'].copy()
-                    all_print_report_dfs.append(temp_df)
-        
-            if all_print_report_dfs:
-                combined_print_report_df = pd.concat(all_print_report_dfs, ignore_index=True)
-                combined_data_to_export["Print Report"] = combined_print_report_df
-
-            # Add detailed sample data from all files
-            combined_highlighting_data = {}
 
 
-            used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
-            sheet_counter = 1
+        # Combine all print_report_df data
+        all_print_report_dfs = []
+        for file_name, results in st.session_state.all_files_results.items():
+            if results.get('print_report_df') is not None:
+                temp_df = results['print_report_df'].copy()
+                all_print_report_dfs.append(temp_df)
         
-            for file_name, results in st.session_state.all_files_results.items():
-                if results['detailed_sample_data']:
-                    file_prefix = file_name.replace('.xlsx', '').replace('.xls', '')[:10]
-                    for sample_data in results['detailed_sample_data']:
-                        # Create base sheet name with file prefix
-                        base_sheet_name = f"{file_prefix}_{sample_data['sheet_name']}"[:27]  # Leave room for counter
-                        # Remove invalid characters for Excel sheet names
-                        invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
-                        for char in invalid_chars:
-                            base_sheet_name = base_sheet_name.replace(char, '_')
+        if all_print_report_dfs:
+            combined_print_report_df = pd.concat(all_print_report_dfs, ignore_index=True)
+            combined_data_to_export["Print Report"] = combined_print_report_df
+
+        # Add detailed sample data from all files
+        combined_highlighting_data = {}
+
+
+        used_sheet_names = set(combined_data_to_export.keys())  # Track existing sheet names
+        sheet_counter = 1
+        
+        for file_name, results in st.session_state.all_files_results.items():
+            if results['detailed_sample_data']:
+                file_prefix = file_name.replace('.xlsx', '').replace('.xls', '')[:10]
+                for sample_data in results['detailed_sample_data']:
+                    # Create base sheet name with file prefix
+                    base_sheet_name = f"{file_prefix}_{sample_data['sheet_name']}"[:27]  # Leave room for counter
+                    # Remove invalid characters for Excel sheet names
+                    invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
+                    for char in invalid_chars:
+                        base_sheet_name = base_sheet_name.replace(char, '_')
                     
-                        # Ensure unique sheet name
-                        sheet_name = base_sheet_name
-                        if sheet_name.lower() in [name.lower() for name in used_sheet_names]:
-                            # Add counter to make it unique
-                            sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
-                            while sheet_name.lower() in [name.lower() for name in used_sheet_names]:
-                                sheet_counter += 1
-                                sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                    # Ensure unique sheet name
+                    sheet_name = base_sheet_name
+                    if sheet_name.lower() in [name.lower() for name in used_sheet_names]:
+                        # Add counter to make it unique
+                        sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                        while sheet_name.lower() in [name.lower() for name in used_sheet_names]:
                             sheet_counter += 1
+                            sheet_name = f"{base_sheet_name}_{sheet_counter}"[:31]
+                        sheet_counter += 1
                     
-                        used_sheet_names.add(sheet_name)
-                        combined_data_to_export[sheet_name] = sample_data['dataframe']
+                    used_sheet_names.add(sheet_name)
+                    combined_data_to_export[sheet_name] = sample_data['dataframe']
                     
-                        # Add highlighting data for this sheet
-                        if sample_data['sheet_name'] in results['highlighting_data']:
-                            combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
+                    # Add highlighting data for this sheet
+                    if sample_data['sheet_name'] in results['highlighting_data']:
+                        combined_highlighting_data[sheet_name] = results['highlighting_data'][sample_data['sheet_name']]
         
-            # Add Audit Trail sheet if it exists in the uploaded file
-            for file_name, results in st.session_state.all_files_results.items():
-                if results.get('audit_trail_df') is not None:
-                    # Only add Audit Trail from the first file that has it
-                    if 'Audit_Trail' not in combined_data_to_export:
-                        combined_data_to_export['Audit_Trail'] = results['audit_trail_df']
-                    break
+        # Add Audit Trail sheet if it exists in the uploaded file
+        for file_name, results in st.session_state.all_files_results.items():
+            if results.get('audit_trail_df') is not None:
+                # Only add Audit Trail from the first file that has it
+                if 'Audit_Trail' not in combined_data_to_export:
+                    combined_data_to_export['Audit_Trail'] = results['audit_trail_df']
+                break
         
-            # Download button for combined results
-            if combined_data_to_export:
-                excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
+        # Download button for combined results
+        if combined_data_to_export:
+            excel_bytes_combined = dfs_to_excel_bytes(combined_data_to_export, combined_highlighting_data)
             
-                # Generate output filename based on uploaded files
-                if len(st.session_state.all_files_results) == 1:
-                    # Single file: use original name with _Rapp suffix
-                    original_filename = list(st.session_state.all_files_results.keys())[0]
-                    base_name = original_filename.replace('.xlsx', '').replace('.xls', '')
-                    output_filename = f"{base_name}_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                else:
-                    # Multiple files: use first file's name with _combined suffix
-                    first_filename = list(st.session_state.all_files_results.keys())[0]
-                    base_name = first_filename.replace('.xlsx', '').replace('.xls', '')
-                    output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            
-                st.download_button(
-                    label="📥 Download Analysis Results", 
-                    data=excel_bytes_combined,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            # Generate output filename based on uploaded files
+            if len(st.session_state.all_files_results) == 1:
+                # Single file: use original name with _Rapp suffix
+                original_filename = list(st.session_state.all_files_results.keys())[0]
+                base_name = original_filename.replace('.xlsx', '').replace('.xls', '')
+                output_filename = f"{base_name}_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             else:
-                st.caption("No data available to export.")
+                # Multiple files: use first file's name with _combined suffix
+                first_filename = list(st.session_state.all_files_results.keys())[0]
+                base_name = first_filename.replace('.xlsx', '').replace('.xls', '')
+                output_filename = f"{base_name}_combined_{len(st.session_state.all_files_results)}files_Rapp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            
+            st.download_button(
+                label="📥 Download Analysis Results", 
+                data=excel_bytes_combined,
+                file_name=output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
-            st.info("No file has been processed yet. Please upload an Excel file to see results.")
+            st.caption("No data available to export.")
+    else:
+        st.info("No file has been processed yet. Please upload an Excel file to see results.")
 
 # --- End of Combined Export Results Section ---
 else:
