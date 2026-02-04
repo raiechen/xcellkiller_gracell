@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.991"
+APP_VERSION = "0.992"
 
 # Import the necessary libraries
 import streamlit as st
@@ -157,8 +157,11 @@ def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
 
                         # Filter data to only consider time points after effector addition (if available)
                         if effector_time_hours is not None:
-                            # Only consider data after effector addition time
-                            after_effector_mask = time_series >= effector_time_hours
+                            # Find closest timestamp to effector addition time
+                            closest_idx = (time_series - effector_time_hours).abs().idxmin()
+                            closest_time = time_series.loc[closest_idx]
+                            # Only consider data from closest timestamp onwards
+                            after_effector_mask = time_series >= closest_time
                             well_data_filtered = well_data_series[after_effector_mask]
                             
                             if well_data_filtered.notna().sum() == 0:
@@ -747,7 +750,10 @@ if uploaded_file:
                                                 # Filter data to only consider time points after effector addition (if available)
                                                 if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
                                                     time_series_hl = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
-                                                    after_effector_mask = time_series_hl >= effector_time_hours
+                                                    # Find closest timestamp to effector addition time
+                                                    closest_idx = (time_series_hl - effector_time_hours).abs().idxmin()
+                                                    closest_time = time_series_hl.loc[closest_idx]
+                                                    after_effector_mask = time_series_hl >= closest_time
                                                     well_data_filtered_hl = well_data_series_hl[after_effector_mask]
                                                 else:
                                                     # No effector time found, use all data (original behavior)
@@ -801,8 +807,11 @@ if uploaded_file:
                                                     
                                                     # Filter data based on effector addition time
                                                     if effector_time_hours is not None:
-                                                        # Only consider data after effector addition
-                                                        after_effector_mask = time_series >= effector_time_hours
+                                                        # Find closest timestamp to effector addition time
+                                                        closest_idx = (time_series - effector_time_hours).abs().idxmin()
+                                                        closest_time = time_series.loc[closest_idx]
+                                                        # Only consider data from closest timestamp onwards
+                                                        after_effector_mask = time_series >= closest_time
                                                         data_filtered = s_num[after_effector_mask]
                                                         time_filtered = time_series[after_effector_mask]
                                                     else:
@@ -837,7 +846,10 @@ if uploaded_file:
                                                     # For non-MED samples, also filter by effector time if available
                                                     if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
                                                         time_series = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
-                                                        after_effector_mask = time_series >= effector_time_hours
+                                                        # Find closest timestamp to effector addition time
+                                                        closest_idx = (time_series - effector_time_hours).abs().idxmin()
+                                                        closest_time = time_series.loc[closest_idx]
+                                                        after_effector_mask = time_series >= closest_time
                                                         data_filtered = s_num[after_effector_mask]
                                                         
                                                         if not data_filtered.empty:
@@ -950,7 +962,10 @@ if uploaded_file:
                                                 # Filter data to only consider time points after effector addition (if available)
                                                 if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
                                                     time_series_calc = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
-                                                    after_effector_mask = time_series_calc >= effector_time_hours
+                                                    # Find closest timestamp to effector addition time
+                                                    closest_idx = (time_series_calc - effector_time_hours).abs().idxmin()
+                                                    closest_time = time_series_calc.loc[closest_idx]
+                                                    after_effector_mask = time_series_calc >= closest_time
                                                     well_data_filtered_calc = well_data_series[after_effector_mask]
                                                 else:
                                                     # No effector time found, use all data (original behavior)
@@ -998,7 +1013,7 @@ if uploaded_file:
                                                         
                                                         # Check if threshold is met and warn if not
                                                         if max_value < threshold_value:
-                                                            st.warning(f"⚠️ WARNING: {well_col} ({assay_name}) max CI ({max_value:.3f}) is below threshold ({threshold_text})")
+                                                            st.warning(f"⚠️ WARNING: {well_col_name_calc} ({assay_name_key}) max CI ({max_value:.3f}) is below threshold ({threshold_text})")
 
                                                         # Find index of max value
                                                         idx_max_value = well_data_filtered_calc.idxmax()
@@ -1208,7 +1223,10 @@ if uploaded_file:
                                                 
                                                 # Filter data after effector addition if available
                                                 if effector_time_hours is not None:
-                                                    after_effector_mask = time_values >= effector_time_hours
+                                                    # Find closest timestamp to effector addition time
+                                                    closest_idx = (time_values - effector_time_hours).abs().idxmin()
+                                                    closest_time = time_values.loc[closest_idx]
+                                                    after_effector_mask = time_values >= closest_time
                                                     well_data_filtered = well_data[after_effector_mask]
                                                     time_filtered = time_values[after_effector_mask]
                                                 else:
@@ -1434,7 +1452,10 @@ if uploaded_file:
                                             effector_time_hours, _ = get_effector_addition_time(excel_file) if excel_file else (None, None)
                                             if effector_time_hours is not None and "Time (Hour)" in st.session_state.main_data_df.columns:
                                                 time_series_recovery = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
-                                                after_effector_mask = time_series_recovery >= effector_time_hours
+                                                # Find closest timestamp to effector addition time
+                                                closest_idx = (time_series_recovery - effector_time_hours).abs().idxmin()
+                                                closest_time = time_series_recovery.loc[closest_idx]
+                                                after_effector_mask = time_series_recovery >= closest_time
                                                 well_data_filtered_recovery = well_data_series[after_effector_mask]
                                             else:
                                                 # No effector time found, use all data
@@ -1727,7 +1748,10 @@ if uploaded_file:
                                             
                                             # Filter data to only consider time points after effector addition (if available)
                                             if effector_time_hours is not None:
-                                                after_effector_mask = time_series >= effector_time_hours
+                                                # Find closest timestamp to effector addition time
+                                                closest_idx = (time_series - effector_time_hours).abs().idxmin()
+                                                closest_time = time_series.loc[closest_idx]
+                                                after_effector_mask = time_series >= closest_time
                                                 well_data_filtered = well_data_series[after_effector_mask]
                                                 
                                                 if well_data_filtered.notna().sum() == 0:
