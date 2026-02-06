@@ -644,6 +644,7 @@ if uploaded_file:
                 half_killing_summary_data = [] # Initialize list for summary DataFrame
                 closest_to_half_target_data = [] # Initialize list for the new DataFrame
                 print_report_data = [] # Initialize list for Print Report
+                threshold_violations = [] # Track samples that fail BCMA/CD19 threshold requirements
 
                 st.markdown("---")
                 with st.expander("Detailed Sample Data by Well", expanded=False):
@@ -1011,9 +1012,14 @@ if uploaded_file:
                                                         max_value = well_data_filtered_calc.max()
                                                         half_killing_target = max_value / 2
                                                         
-                                                        # Check if threshold is met and warn if not
+                                                        # Check if threshold is met and track violation if not
                                                         if max_value < threshold_value:
-                                                            st.warning(f"⚠️ WARNING: {well_col_name_calc} ({assay_name_key}) max CI ({max_value:.3f}) is below threshold ({threshold_text})")
+                                                            threshold_violations.append({
+                                                                'well': well_col_name_calc,
+                                                                'sample': assay_name_key,
+                                                                'max_ci': max_value,
+                                                                'threshold': threshold_text
+                                                            })
 
                                                         # Find index of max value
                                                         idx_max_value = well_data_filtered_calc.idxmax()
@@ -1807,6 +1813,13 @@ if uploaded_file:
                         st.markdown("❌ Fail")
                     else:
                         st.markdown("⚠️ Pending")
+                
+                # Display threshold warnings (informational only, not part of pass/fail criteria)
+                if threshold_violations:
+                    threshold_text = "0.4" if assay_type_str == "BCMA" else "0.8" if assay_type_str == "CD19" else "N/A"
+                    st.warning(f"⚠️ WARNING: {len(threshold_violations)} sample(s) below recommended max CI threshold (>= {threshold_text}):")
+                    for violation in threshold_violations:
+                        st.warning(f"   • {violation['well']} ({violation['sample']}): max CI = {violation['max_ci']:.3f}, threshold = {violation['threshold']}")
             # --- End of Finalize Assay Status ---
 
             # Store this file's results in session state
