@@ -1820,6 +1820,15 @@ if uploaded_file:
                     st.warning(f"⚠️ WARNING: {len(threshold_violations)} sample(s) below recommended max CI threshold (>= {threshold_text}):")
                     for violation in threshold_violations:
                         st.warning(f"   • {violation['well']} ({violation['sample']}): max CI = {violation['max_ci']:.3f}, threshold = {violation['threshold']}")
+
+                # Display low replicate count warnings
+                if current_file_results.get('stats_highlighting', {}).get('low_replicate_rows') and current_file_results.get('stats_df') is not None:
+                    low_rep_df = current_file_results['stats_df'].loc[current_file_results['stats_highlighting']['low_replicate_rows']]
+                    st.warning(f"⚠️ WARNING: {len(low_rep_df)} sample(s) have fewer than 3 replicates:")
+                    for _, row in low_rep_df.iterrows():
+                        rep_count = row.get('Number of Replicates', 'N/A')
+                        sample_name = row.get('Sample Name', 'Unknown')
+                        st.warning(f"   • {sample_name}: {rep_count} replicate(s)")
             # --- End of Finalize Assay Status ---
 
             # Store this file's results in session state
