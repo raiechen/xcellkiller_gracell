@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.992"
+APP_VERSION = "0.993"
 
 # Import the necessary libraries
 import streamlit as st
@@ -693,7 +693,6 @@ if uploaded_file:
     
                                 # Prepare the DataFrame for display
                                 try:
-                                    assay_display_df = pd.DataFrame()
                                     assay_display_df = pd.DataFrame()
                                     # Ensure base time columns are present
                                     if "Time (Hour)" not in st.session_state.main_data_df.columns or \
@@ -1615,7 +1614,7 @@ if uploaded_file:
                                     rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
                                     if pd.notna(rep_value) and rep_value < 3:
                                         styles[rep_col_idx] = 'background-color: #FFCCCC; color: #8B0000; font-weight: bold'
-                                except:
+                                except Exception:
                                     pass
                             return styles
 
@@ -1646,7 +1645,7 @@ if uploaded_file:
                                     rep_value = pd.to_numeric(row['Number of Replicates'], errors='coerce')
                                     if pd.notna(rep_value) and rep_value < 3:
                                         low_replicate_rows.append(idx)
-                                except:
+                                except Exception:
                                     pass
                             if low_replicate_rows:
                                 stats_highlighting['low_replicate_rows'] = low_replicate_rows
@@ -1767,7 +1766,7 @@ if uploaded_file:
                                             
                                             # Store the filtered series for this well
                                             well_data_dict[well_col_name] = well_data_filtered
-                                        except:
+                                        except Exception:
                                             local_max_criteria_pass = False
                                     
                                     # Check if we collected any valid data
