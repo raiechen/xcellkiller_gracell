@@ -1523,6 +1523,14 @@ if uploaded_file:
 
                         # Add the replicate count to stats_df
                         stats_df['Number of Replicates'] = stats_df['Sample Name'].map(actual_replicate_counts)
+
+                        # Add "Trend of Killing" column:
+                        # "Yes" = CI does NOT recover above half-max at last time point (no recovery, good).
+                        # "No"  = CI recovers above half-max at last time point (bad, would also make sample Invalid).
+                        # Uses the already-computed sample_recovery_status dict (True = has recovery).
+                        stats_df["Trend of Killing"] = stats_df["Sample Name"].map(
+                            lambda x: "No" if sample_recovery_status.get(x, False) else "Yes"
+                        )
                         # If sample name not found in mapping, default to the number of data points we have
                         stats_df['Number of Replicates'] = stats_df['Number of Replicates'].fillna(
                             closest_df.groupby("Sample Name").size()
@@ -1613,6 +1621,10 @@ if uploaded_file:
                         # Add "Killed below half max cell index Summary" towards the end of the primary desired columns
                         if "Killed below half max cell index Summary" in stats_df.columns:
                             desired_column_order.append("Killed below half max cell index Summary")
+
+                        # Add "Trend of Killing" right after "Killed below half max cell index Summary"
+                        if "Trend of Killing" in stats_df.columns:
+                            desired_column_order.append("Trend of Killing")
 
                         # Add any remaining columns from stats_df that are not in desired_column_order yet
                         # This ensures all columns are present, even if new ones are added unexpectedly
