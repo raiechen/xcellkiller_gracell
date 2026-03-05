@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.993"
+APP_VERSION = "0.994"
 
 # Import the necessary libraries
 import streamlit as st
@@ -35,8 +35,7 @@ def get_effector_addition_time(excel_file):
             audit_sheet_name = 'Audit_Trail'
         
         if audit_sheet_name is None:
-            warning_message = "⚠️ WARNING: Audit Trail sheet not found. Cannot determine effector addition time. Proceeding without effector time filtering."
-            return None, warning_message
+            return None, "MISSING_AUDIT_TRAIL_SHEET"
         
         audit_df = excel_file.parse(audit_sheet_name)
         
@@ -427,9 +426,12 @@ if uploaded_file:
         # Use pd.ExcelFile for efficiency, especially if accessing multiple sheets or metadata
         excel_file = pd.ExcelFile(uploaded_file)
         
-        # Check for effector addition time warning EARLY - show warning but continue processing
+        # Check for effector addition time warning EARLY
         _, effector_warning = get_effector_addition_time(excel_file)
-        if effector_warning:
+        if effector_warning == "MISSING_AUDIT_TRAIL_SHEET":
+            st.error("Error: 'Audit Trail' sheet not found in the uploaded file. This sheet is required to determine effector addition time. Please upload a file that contains an 'Audit Trail' or 'Audit_Trail' sheet.")
+            st.stop()
+        elif effector_warning:
             st.warning(effector_warning)
             # Continue processing - do NOT stop
         
@@ -947,6 +949,10 @@ if uploaded_file:
 
                                             well_data_series = pd.to_numeric(assay_display_df[well_col_name_calc], errors='coerce')
                                             killed_status = "No"  # Default status
+                                            max_ci_report = None       # Max Cell Index CI value
+                                            ci_max_over_2_report = None  # CImax/2 value
+                                            closest_ci_report = None   # Closest CI value to CImax/2
+                                            endpoint_ci_report = None  # Cell Index at last time point
                                         
                                             # Determine assay type for this file
                                             assay_type = "Error - test type can't be found in file name"
@@ -970,6 +976,10 @@ if uploaded_file:
                                                 else:
                                                     # No effector time found, use all data (original behavior)
                                                     well_data_filtered_calc = well_data_series
+                                                
+                                                # Compute Endpoint Cell Index from the filtered series (always, regardless of killed status)
+                                                _valid_filtered = well_data_filtered_calc.dropna()
+                                                endpoint_ci_report = float(_valid_filtered.iloc[-1]) if not _valid_filtered.empty else None
                                                 
                                                 if assay_type == "BCMA":
                                                     # For BCMA: use all data, check if max >= 0.4
@@ -1010,6 +1020,9 @@ if uploaded_file:
                                                         # Find max value from ALL data (no threshold filtering)
                                                         max_value = well_data_filtered_calc.max()
                                                         half_killing_target = max_value / 2
+                                                        # Always capture Max CI and CImax/2 for Summary table
+                                                        max_ci_report = max_value
+                                                        ci_max_over_2_report = half_killing_target
                                                         
                                                         # Check if threshold is met and track violation if not
                                                         if max_value < threshold_value:
@@ -1047,6 +1060,8 @@ if uploaded_file:
                                                                 time_max_hhmmss_report = time_at_max_hhmmss
                                                                 half_val_report = half_killing_target
                                                                 time_half_report = closest_to_0_5_hour_val
+                                                                # Capture the actual CI at the closest-to-half-max point
+                                                                closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
                                                             else:
                                                                 # No data after max, can't calculate half-killing time
                                                                 continue
@@ -1105,6 +1120,10 @@ if uploaded_file:
                                             target_data_row = {
                                                 "Sample Name": assay_name_key,
                                                 "Killed below half max cell index": killed_status,
+                                                "Max Cell Index": max_ci_report,
+                                                "CImax/2": ci_max_over_2_report,
+                                                "Closest to CImax/2": closest_ci_report if killed_status == "Yes" else None,
+                                                "Endpoint Cell Index": endpoint_ci_report,
                                                 "Max cell index time (Hour)": time_max_report,
                                                 "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
                                                 "Closest Time to 1/2 Max Cell Index (Hour)": closest_hour_display,
@@ -1375,7 +1394,7 @@ if uploaded_file:
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
                     # Ensure correct column order for display, including the new column
-                    column_order = ["Sample Name", "Killed below half max cell index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)"]
+                    column_order = ["Sample Name", "Killed below half max cell index", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)"]
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
                     existing_columns_in_order = [col for col in column_order if col in closest_df.columns]
                     closest_df = closest_df[existing_columns_in_order]
