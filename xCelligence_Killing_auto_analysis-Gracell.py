@@ -11,6 +11,16 @@ import re # For parsing Input ID
 import plotly.express as px # For plotting
 import plotly.graph_objects as go # For advanced plotting with markers
 
+def hours_to_hhmmss(decimal_hours):
+    """Convert decimal hours (e.g. 2.75) to 'hh:mm:ss' string."""
+    if decimal_hours is None or (isinstance(decimal_hours, float) and np.isnan(decimal_hours)):
+        return None
+    total_seconds = int(round(decimal_hours * 3600))
+    h = total_seconds // 3600
+    m = (total_seconds % 3600) // 60
+    s = total_seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
 # Function to extract cell effector addition time from Audit Trail
 def get_effector_addition_time(excel_file):
     """
@@ -1128,7 +1138,8 @@ if uploaded_file:
                                                 "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
                                                 "Closest Time to 1/2 Max Cell Index (Hour)": closest_hour_display,
                                                 "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_hhmmss_display,
-                                                "Half-killing time (Hour)": half_killing_display
+                                                "Half-killing time (Hour)": half_killing_display,
+                                                "Half Cell Killing Time": hours_to_hhmmss(half_killing_display)
                                             }
                                             closest_to_half_target_data.append(target_data_row)
 
@@ -1394,7 +1405,7 @@ if uploaded_file:
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
                     # Ensure correct column order for display, including the new column
-                    column_order = ["Sample Name", "Killed below half max cell index", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)"]
+                    column_order = ["Sample Name", "Killed below half max cell index", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)", "Half Cell Killing Time"]
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
                     existing_columns_in_order = [col for col in column_order if col in closest_df.columns]
                     closest_df = closest_df[existing_columns_in_order]
