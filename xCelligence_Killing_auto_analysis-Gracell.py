@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.994"
+APP_VERSION = "0.995"
 
 # Import the necessary libraries
 import streamlit as st
@@ -1536,12 +1536,17 @@ if uploaded_file:
                         stats_df['Number of Replicates'] = stats_df['Sample Name'].map(actual_replicate_counts)
 
                         # Add "Trend of Killing" column:
-                        # "Yes" = CI does NOT recover above half-max at last time point (no recovery, good).
-                        # "No"  = CI recovers above half-max at last time point (bad, would also make sample Invalid).
-                        # Uses the already-computed sample_recovery_status dict (True = has recovery).
-                        stats_df["Trend of Killing"] = stats_df["Sample Name"].map(
-                            lambda x: "No" if sample_recovery_status.get(x, False) else "Yes"
-                        )
+                        # "Yes" = Cells killed AND CI does NOT recover above half-max at last time point.
+                        # "No"  = Cells never killed (All No) OR CI recovers above half-max at last time point.
+                        kill_summary_dict = kill_summary_series.to_dict() if not kill_summary_series.empty else {}
+                        def _trend_of_killing(sample_name):
+                            summary = kill_summary_dict.get(sample_name, "")
+                            if summary == "All No" or "0 Yes" in str(summary):
+                                return "No"
+                            if sample_recovery_status.get(sample_name, False):
+                                return "No"
+                            return "Yes"
+                        stats_df["Trend of Killing"] = stats_df["Sample Name"].map(_trend_of_killing)
                         # If sample name not found in mapping, default to the number of data points we have
                         stats_df['Number of Replicates'] = stats_df['Number of Replicates'].fillna(
                             closest_df.groupby("Sample Name").size()
