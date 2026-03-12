@@ -1006,7 +1006,7 @@ if uploaded_file:
                                                     if not indices_at_1.empty:
                                                         idx_at_1 = indices_at_1[0]
                                                         well_data_after_1 = well_data_filtered_calc.loc[idx_at_1:].iloc[1:]
-                                                        if not well_data_after_1.empty:
+                                                        if not well_data_after_1.empty and well_data_after_1.notna().any():
                                                             idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
                                                             closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
                                                             closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
@@ -1020,6 +1020,12 @@ if uploaded_file:
                                                             time_max_hhmmss_report = time_at_1_hhmmss
                                                             half_val_report = 0.5
                                                             time_half_report = closest_to_0_5_hour_val
+                                                            max_ci_report = 1.0
+                                                            ci_max_over_2_report = 0.5
+                                                            closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
+                                                            # Check killed status for unknown assay type
+                                                            if (well_data_after_1 < 0.5).any():
+                                                                killed_status = "Yes"
                                                         else:
                                                             continue
                                                     else:
@@ -1092,7 +1098,8 @@ if uploaded_file:
                                                             idx_max = well_data_filtered_calc.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
-                                                            values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
+                                                            pos_max = well_data_filtered_calc.index.get_loc(idx_max)
+                                                            values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                     elif assay_type == "CD19":
@@ -1106,7 +1113,8 @@ if uploaded_file:
                                                             idx_max = well_data_filtered_calc.idxmax()
 
                                                             # Check if values drop below half of max after reaching max
-                                                            values_after_max = well_data_filtered_calc.loc[idx_max+1:] if idx_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
+                                                            pos_max = well_data_filtered_calc.index.get_loc(idx_max)
+                                                            values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
                                                             if not values_after_max.empty and (values_after_max < half_max_threshold).any():
                                                                 killed_status = "Yes"
                                                     
@@ -1129,7 +1137,7 @@ if uploaded_file:
 
                                             target_data_row = {
                                                 "Sample Name": assay_name_key,
-                                                "Killed below half max cell index": killed_status,
+                                                "Trend of killing": killed_status,
                                                 "Max Cell Index": max_ci_report,
                                                 "CImax/2": ci_max_over_2_report,
                                                 "Closest to CImax/2": closest_ci_report if killed_status == "Yes" else None,
@@ -1147,7 +1155,7 @@ if uploaded_file:
                                                 "Sample Name": assay_name_key,
                                                 "Treatment": treatment_group,
                                                 "Well ID": well_col_name_calc,
-                                                "Killed below half max cell index": killed_status,
+                                                "Trend of killing": killed_status,
                                                 "Half-killing target (Hour)": closest_hour_display,
                                                 "Half-killing target (hh:mm:ss)": closest_hhmmss_display,
                                                 "Half-killing time (Hour)": half_killing_display
@@ -1405,7 +1413,7 @@ if uploaded_file:
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
                     # Ensure correct column order for display, including the new column
-                    column_order = ["Sample Name", "Killed below half max cell index", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)", "Half Cell Killing Time"]
+                    column_order = ["Sample Name", "Trend of killing", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)", "Half Cell Killing Time"]
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
                     existing_columns_in_order = [col for col in column_order if col in closest_df.columns]
                     closest_df = closest_df[existing_columns_in_order]
@@ -1413,10 +1421,10 @@ if uploaded_file:
 
                     # --- Calculate "Killed below half max cell index Summary" for stats_df ---
                     kill_summary_series = pd.Series(dtype=str) # Initialize an empty Series
-                    if not closest_df.empty and "Sample Name" in closest_df.columns and "Killed below half max cell index" in closest_df.columns:
-                        # Ensure "Killed below half max cell index" is string type for reliable counting
-                        closest_df["Killed below half max cell index"] = closest_df["Killed below half max cell index"].astype(str)
-                        kill_summary_series = closest_df.groupby("Sample Name")["Killed below half max cell index"].apply(format_kill_summary)
+                    if not closest_df.empty and "Sample Name" in closest_df.columns and "Trend of killing" in closest_df.columns:
+                        # Ensure "Trend of killing" is string type for reliable counting
+                        closest_df["Trend of killing"] = closest_df["Trend of killing"].astype(str)
+                        kill_summary_series = closest_df.groupby("Sample Name")["Trend of killing"].apply(format_kill_summary)
                         kill_summary_series = kill_summary_series.rename("Killed below half max cell index Summary")
                     # --- End of "Killed below half max cell index Summary" calculation ---
 
@@ -1541,11 +1549,10 @@ if uploaded_file:
                         kill_summary_dict = kill_summary_series.to_dict() if not kill_summary_series.empty else {}
                         def _trend_of_killing(sample_name):
                             summary = kill_summary_dict.get(sample_name, "")
-                            if summary == "All No" or "0 Yes" in str(summary):
-                                return "No"
-                            if sample_recovery_status.get(sample_name, False):
-                                return "No"
-                            return "Yes"
+                            # "Yes" ONLY when every replicate is "Yes" AND no CI recovery
+                            if summary == "All Yes" and not sample_recovery_status.get(sample_name, False):
+                                return "Yes"
+                            return "No"
                         stats_df["Trend of Killing"] = stats_df["Sample Name"].map(_trend_of_killing)
                         # If sample name not found in mapping, default to the number of data points we have
                         stats_df['Number of Replicates'] = stats_df['Number of Replicates'].fillna(
