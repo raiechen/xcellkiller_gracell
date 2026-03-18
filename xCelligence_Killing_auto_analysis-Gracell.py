@@ -947,244 +947,239 @@ if uploaded_file:
                                     }
     
                                     # --- Half-Killing Time Calculation for each well in this assay_display_df ---
-                                    # Skip MED/CMM/Only samples from half-killing time analysis (they're only used for assay status)
-                                    assay_name_str = str(assay_name_key).strip()
-                                    is_med_only_sample = assay_name_str.upper().startswith("MED") or assay_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", assay_name_str, flags=re.IGNORECASE)
+                                    for well_col_name_calc in valid_well_columns_for_assay:
+                                        if well_col_name_calc not in assay_display_df.columns:
+                                            # This well was skipped during temp_well_data_for_df creation or doesn't exist
+                                            continue
 
-                                    if not is_med_only_sample:
-                                        for well_col_name_calc in valid_well_columns_for_assay:
-                                            if well_col_name_calc not in assay_display_df.columns:
-                                                # This well was skipped during temp_well_data_for_df creation or doesn't exist
-                                                continue
-
-                                            well_data_series = pd.to_numeric(assay_display_df[well_col_name_calc], errors='coerce')
-                                            killed_status = "No"  # Default status
-                                            max_ci_report = None       # Max Cell Index CI value
-                                            ci_max_over_2_report = None  # CImax/2 value
-                                            closest_ci_report = None   # Closest CI value to CImax/2
-                                            endpoint_ci_report = None  # Cell Index at last time point
+                                        well_data_series = pd.to_numeric(assay_display_df[well_col_name_calc], errors='coerce')
+                                        killed_status = "No"  # Default status
+                                        max_ci_report = None       # Max Cell Index CI value
+                                        ci_max_over_2_report = None  # CImax/2 value
+                                        closest_ci_report = None   # Closest CI value to CImax/2
+                                        endpoint_ci_report = None  # Cell Index at last time point
                                         
-                                            # Determine assay type for this file
-                                            assay_type = "Error - test type can't be found in file name"
-                                            if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
-                                                if "cd19" in uploaded_file.name.lower():
-                                                    assay_type = "CD19"
-                                                elif "bcma" in uploaded_file.name.lower():
-                                                    assay_type = "BCMA"
+                                        # Determine assay type for this file
+                                        assay_type = "Error - test type can't be found in file name"
+                                        if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+                                            if "cd19" in uploaded_file.name.lower():
+                                                assay_type = "CD19"
+                                            elif "bcma" in uploaded_file.name.lower():
+                                                assay_type = "BCMA"
 
-                                            # NEW APPROACH: No longer looking for value "1" first
-                                            # Instead, directly apply assay-specific thresholds to entire dataset
-                                            try:
-                                                # Filter data to only consider time points after effector addition (if available)
-                                                if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
-                                                    time_series_calc = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
-                                                    # Find closest timestamp to effector addition time
-                                                    closest_idx = (time_series_calc - effector_time_hours).abs().idxmin()
-                                                    closest_time = time_series_calc.loc[closest_idx]
-                                                    after_effector_mask = time_series_calc >= closest_time
-                                                    well_data_filtered_calc = well_data_series[after_effector_mask]
-                                                else:
-                                                    # No effector time found, use all data (original behavior)
-                                                    well_data_filtered_calc = well_data_series
+                                        # NEW APPROACH: No longer looking for value "1" first
+                                        # Instead, directly apply assay-specific thresholds to entire dataset
+                                        try:
+                                            # Filter data to only consider time points after effector addition (if available)
+                                            if effector_time_hours is not None and "Time (Hour)" in assay_display_df.columns:
+                                                time_series_calc = pd.to_numeric(assay_display_df["Time (Hour)"], errors='coerce')
+                                                # Find closest timestamp to effector addition time
+                                                closest_idx = (time_series_calc - effector_time_hours).abs().idxmin()
+                                                closest_time = time_series_calc.loc[closest_idx]
+                                                after_effector_mask = time_series_calc >= closest_time
+                                                well_data_filtered_calc = well_data_series[after_effector_mask]
+                                            else:
+                                                # No effector time found, use all data (original behavior)
+                                                well_data_filtered_calc = well_data_series
                                                 
-                                                # Compute Endpoint Cell Index from the filtered series (always, regardless of killed status)
-                                                _valid_filtered = well_data_filtered_calc.dropna()
-                                                endpoint_ci_report = float(_valid_filtered.iloc[-1]) if not _valid_filtered.empty else None
+                                            # Compute Endpoint Cell Index from the filtered series (always, regardless of killed status)
+                                            _valid_filtered = well_data_filtered_calc.dropna()
+                                            endpoint_ci_report = float(_valid_filtered.iloc[-1]) if not _valid_filtered.empty else None
                                                 
-                                                if assay_type == "BCMA":
-                                                    # For BCMA: use all data, check if max >= 0.4
-                                                    threshold_value = 0.4
-                                                    threshold_text = "0.4"
-                                                elif assay_type == "CD19":
-                                                    # For CD19: use all data, check if max >= 0.8
-                                                    threshold_value = 0.8
-                                                    threshold_text = "0.8"
-                                                else:
-                                                    # For unknown assay types, fall back to original 0.5 logic
-                                                    # Find index where value is 1 (original approach)
-                                                    indices_at_1 = well_data_filtered_calc[well_data_filtered_calc == 1].index
-                                                    if not indices_at_1.empty:
-                                                        idx_at_1 = indices_at_1[0]
-                                                        well_data_after_1 = well_data_filtered_calc.loc[idx_at_1:].iloc[1:]
-                                                        if not well_data_after_1.empty and well_data_after_1.notna().any():
-                                                            idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
-                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
-                                                            time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
-                                                            time_at_1_hhmmss = assay_display_df.loc[idx_at_1, "Time (hh:mm:ss)"]
-                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
+                                            if assay_type == "BCMA":
+                                                # For BCMA: use all data, check if max >= 0.4
+                                                threshold_value = 0.4
+                                                threshold_text = "0.4"
+                                            elif assay_type == "CD19":
+                                                # For CD19: use all data, check if max >= 0.8
+                                                threshold_value = 0.8
+                                                threshold_text = "0.8"
+                                            else:
+                                                # For unknown assay types, fall back to original 0.5 logic
+                                                # Find index where value is 1 (original approach)
+                                                indices_at_1 = well_data_filtered_calc[well_data_filtered_calc == 1].index
+                                                if not indices_at_1.empty:
+                                                    idx_at_1 = indices_at_1[0]
+                                                    well_data_after_1 = well_data_filtered_calc.loc[idx_at_1:].iloc[1:]
+                                                    if not well_data_after_1.empty and well_data_after_1.notna().any():
+                                                        idx_closest_to_target = (well_data_after_1 - 0.5).abs().idxmin()
+                                                        closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                        closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+                                                        time_at_1_hour = assay_display_df.loc[idx_at_1, "Time (Hour)"]
+                                                        time_at_1_hhmmss = assay_display_df.loc[idx_at_1, "Time (hh:mm:ss)"]
+                                                        half_killing_time_calc = closest_to_0_5_hour_val - time_at_1_hour
 
-                                                            # Capture data for Print Report
-                                                            max_val_report = 1.0
-                                                            time_max_report = time_at_1_hour
-                                                            time_max_hhmmss_report = time_at_1_hhmmss
-                                                            half_val_report = 0.5
-                                                            time_half_report = closest_to_0_5_hour_val
-                                                            max_ci_report = 1.0
-                                                            ci_max_over_2_report = 0.5
-                                                            closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
-                                                            # Check killed status for unknown assay type
-                                                            if (well_data_after_1 < 0.5).any():
-                                                                killed_status = "Yes"
-                                                        else:
-                                                            continue
+                                                        # Capture data for Print Report
+                                                        max_val_report = 1.0
+                                                        time_max_report = time_at_1_hour
+                                                        time_max_hhmmss_report = time_at_1_hhmmss
+                                                        half_val_report = 0.5
+                                                        time_half_report = closest_to_0_5_hour_val
+                                                        max_ci_report = 1.0
+                                                        ci_max_over_2_report = 0.5
+                                                        closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
+                                                        # Check killed status for unknown assay type
+                                                        if (well_data_after_1 < 0.5).any():
+                                                            killed_status = "Yes"
                                                     else:
                                                         continue
+                                                else:
+                                                    continue
                                             
-                                                if assay_type in ["BCMA", "CD19"]:
-                                                    if well_data_filtered_calc.notna().sum() > 0:
-                                                        # Find max value from ALL data (no threshold filtering)
-                                                        max_value = well_data_filtered_calc.max()
-                                                        half_killing_target = max_value / 2
-                                                        # Always capture Max CI and CImax/2 for Summary table
-                                                        max_ci_report = max_value
-                                                        ci_max_over_2_report = half_killing_target
+                                            if assay_type in ["BCMA", "CD19"]:
+                                                if well_data_filtered_calc.notna().sum() > 0:
+                                                    # Find max value from ALL data (no threshold filtering)
+                                                    max_value = well_data_filtered_calc.max()
+                                                    half_killing_target = max_value / 2
+                                                    # Always capture Max CI and CImax/2 for Summary table
+                                                    max_ci_report = max_value
+                                                    ci_max_over_2_report = half_killing_target
                                                         
-                                                        # Check if threshold is met and track violation if not
-                                                        if max_value < threshold_value:
-                                                            threshold_violations.append({
-                                                                'well': well_col_name_calc,
-                                                                'sample': assay_name_key,
-                                                                'max_ci': max_value,
-                                                                'threshold': threshold_text
-                                                            })
+                                                    # Check if threshold is met and track violation if not
+                                                    if max_value < threshold_value:
+                                                        threshold_violations.append({
+                                                            'well': well_col_name_calc,
+                                                            'sample': assay_name_key,
+                                                            'max_ci': max_value,
+                                                            'threshold': threshold_text
+                                                        })
 
-                                                        # Find index of max value
-                                                        idx_max_value = well_data_filtered_calc.idxmax()
-                                                        time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
-                                                        time_at_max_hhmmss = assay_display_df.loc[idx_max_value, "Time (hh:mm:ss)"]
+                                                    # Find index of max value
+                                                    idx_max_value = well_data_filtered_calc.idxmax()
+                                                    time_at_max_hour = assay_display_df.loc[idx_max_value, "Time (Hour)"]
+                                                    time_at_max_hhmmss = assay_display_df.loc[idx_max_value, "Time (hh:mm:ss)"]
 
-                                                        # Find time closest to half-killing target ONLY AFTER the max value
-                                                        data_after_max = well_data_filtered_calc.loc[idx_max_value:]
-                                                        if len(data_after_max) >= 1:  # Need at least one point after max
-                                                            # Only exclude the max point if there's more than one point
-                                                            if len(data_after_max) > 1:
-                                                                data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-                                                            if not data_after_max.empty:
-                                                                idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                    # Find time closest to half-killing target ONLY AFTER the max value
+                                                    data_after_max = well_data_filtered_calc.loc[idx_max_value:]
+                                                    if len(data_after_max) >= 1:  # Need at least one point after max
+                                                        # Only exclude the max point if there's more than one point
+                                                        if len(data_after_max) > 1:
+                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                        if not data_after_max.empty:
+                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
 
-                                                                # Get the time values
-                                                                closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                                closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+                                                            # Get the time values
+                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
 
-                                                                # Half-killing time = time at half-killing target - time at max value
-                                                                half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                            # Half-killing time = time at half-killing target - time at max value
+                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
 
-                                                                # Capture data for Print Report
-                                                                max_val_report = max_value
-                                                                time_max_report = time_at_max_hour
-                                                                time_max_hhmmss_report = time_at_max_hhmmss
-                                                                half_val_report = half_killing_target
-                                                                time_half_report = closest_to_0_5_hour_val
-                                                                # Capture the actual CI at the closest-to-half-max point
-                                                                closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
-                                                            else:
-                                                                # No data after max, can't calculate half-killing time
-                                                                continue
+                                                            # Capture data for Print Report
+                                                            max_val_report = max_value
+                                                            time_max_report = time_at_max_hour
+                                                            time_max_hhmmss_report = time_at_max_hhmmss
+                                                            half_val_report = half_killing_target
+                                                            time_half_report = closest_to_0_5_hour_val
+                                                            # Capture the actual CI at the closest-to-half-max point
+                                                            closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
                                                         else:
                                                             # No data after max, can't calculate half-killing time
                                                             continue
+                                                    else:
+                                                        # No data after max, can't calculate half-killing time
+                                                        continue
                                                     
-                                                    # CORRECTED LOGIC: Determine killed status based on assay type
-                                                    # Check if cells drop below half of their max value (half-killing target)
-                                                    if assay_type == "BCMA":
-                                                        # Use all data (no threshold filtering)
-                                                        if well_data_filtered_calc.notna().sum() > 0:
-                                                            # Calculate half-killing target (half of max value)
-                                                            max_val = well_data_filtered_calc.max()
-                                                            half_max_threshold = max_val / 2
+                                                # CORRECTED LOGIC: Determine killed status based on assay type
+                                                # Check if cells drop below half of their max value (half-killing target)
+                                                if assay_type == "BCMA":
+                                                    # Use all data (no threshold filtering)
+                                                    if well_data_filtered_calc.notna().sum() > 0:
+                                                        # Calculate half-killing target (half of max value)
+                                                        max_val = well_data_filtered_calc.max()
+                                                        half_max_threshold = max_val / 2
 
-                                                            # Find index of max value
-                                                            idx_max = well_data_filtered_calc.idxmax()
+                                                        # Find index of max value
+                                                        idx_max = well_data_filtered_calc.idxmax()
 
-                                                            # Check if values drop below half of max after reaching max
-                                                            pos_max = well_data_filtered_calc.index.get_loc(idx_max)
-                                                            values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
-                                                            if not values_after_max.empty and (values_after_max < half_max_threshold).any():
-                                                                killed_status = "Yes"
-                                                    elif assay_type == "CD19":
-                                                        # Use all data (no threshold filtering)
-                                                        if well_data_filtered_calc.notna().sum() > 0:
-                                                            # Calculate half-killing target (half of max value)
-                                                            max_val = well_data_filtered_calc.max()
-                                                            half_max_threshold = max_val / 2
+                                                        # Check if values drop below half of max after reaching max
+                                                        pos_max = well_data_filtered_calc.index.get_loc(idx_max)
+                                                        values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
+                                                        if not values_after_max.empty and (values_after_max < half_max_threshold).any():
+                                                            killed_status = "Yes"
+                                                elif assay_type == "CD19":
+                                                    # Use all data (no threshold filtering)
+                                                    if well_data_filtered_calc.notna().sum() > 0:
+                                                        # Calculate half-killing target (half of max value)
+                                                        max_val = well_data_filtered_calc.max()
+                                                        half_max_threshold = max_val / 2
 
-                                                            # Find index of max value
-                                                            idx_max = well_data_filtered_calc.idxmax()
+                                                        # Find index of max value
+                                                        idx_max = well_data_filtered_calc.idxmax()
 
-                                                            # Check if values drop below half of max after reaching max
-                                                            pos_max = well_data_filtered_calc.index.get_loc(idx_max)
-                                                            values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
-                                                            if not values_after_max.empty and (values_after_max < half_max_threshold).any():
-                                                                killed_status = "Yes"
+                                                        # Check if values drop below half of max after reaching max
+                                                        pos_max = well_data_filtered_calc.index.get_loc(idx_max)
+                                                        values_after_max = well_data_filtered_calc.iloc[pos_max+1:] if pos_max < len(well_data_filtered_calc) - 1 else pd.Series(dtype=float)
+                                                        if not values_after_max.empty and (values_after_max < half_max_threshold).any():
+                                                            killed_status = "Yes"
                                                     
-                                            except (ValueError, KeyError, IndexError) as e:
-                                                st.warning(f"Error calculating half-killing time for well {well_col_name_calc}: {str(e)}")
-                                                continue
+                                        except (ValueError, KeyError, IndexError) as e:
+                                            st.warning(f"Error calculating half-killing time for well {well_col_name_calc}: {str(e)}")
+                                            continue
     
-                                            # Create summary data rows (moved outside the try block)
-                                            # Only include half-killing time if cells were actually killed
-                                            if killed_status == "Yes":
-                                                half_killing_display = half_killing_time_calc
-                                                closest_hour_display = closest_to_0_5_hour_val
-                                                closest_hhmmss_display = closest_to_0_5_hhmmss_val
-                                            else:
-                                                # Cells never dropped below half max, so no half-killing time
-                                                # Use None instead of "N/A" to avoid Arrow serialization errors
-                                                half_killing_display = None
-                                                closest_hour_display = None
-                                                closest_hhmmss_display = None
+                                        # Create summary data rows (moved outside the try block)
+                                        # Only include half-killing time if cells were actually killed
+                                        if killed_status == "Yes":
+                                            half_killing_display = half_killing_time_calc
+                                            closest_hour_display = closest_to_0_5_hour_val
+                                            closest_hhmmss_display = closest_to_0_5_hhmmss_val
+                                        else:
+                                            # Cells never dropped below half max, so no half-killing time
+                                            # Use None instead of "N/A" to avoid Arrow serialization errors
+                                            half_killing_display = None
+                                            closest_hour_display = None
+                                            closest_hhmmss_display = None
 
-                                            target_data_row = {
-                                                "Sample Name": assay_name_key,
-                                                "Trend of killing": killed_status,
-                                                "Max Cell Index": max_ci_report,
-                                                "CImax/2": ci_max_over_2_report,
-                                                "Closest to CImax/2": closest_ci_report if killed_status == "Yes" else None,
-                                                "Endpoint Cell Index": endpoint_ci_report,
-                                                "Max cell index time (Hour)": time_max_report,
-                                                "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
-                                                "Closest Time to 1/2 Max Cell Index (Hour)": closest_hour_display,
-                                                "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_hhmmss_display,
-                                                "Half-killing time (Hour)": half_killing_display,
-                                                "Half Cell Killing Time": hours_to_hhmmss(half_killing_display)
-                                            }
-                                            closest_to_half_target_data.append(target_data_row)
+                                        target_data_row = {
+                                            "Sample Name": assay_name_key,
+                                            "Trend of killing": killed_status,
+                                            "Max Cell Index": max_ci_report,
+                                            "CImax/2": ci_max_over_2_report,
+                                            "Closest to CImax/2": closest_ci_report if killed_status == "Yes" else None,
+                                            "Endpoint Cell Index": endpoint_ci_report,
+                                            "Max cell index time (Hour)": time_max_report,
+                                            "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
+                                            "Closest Time to 1/2 Max Cell Index (Hour)": closest_hour_display,
+                                            "Closest Time to 1/2 Max Cell Index (hh:mm:ss)": closest_hhmmss_display,
+                                            "Half-killing time (Hour)": half_killing_display,
+                                            "Half Cell Killing Time": hours_to_hhmmss(half_killing_display)
+                                        }
+                                        closest_to_half_target_data.append(target_data_row)
 
-                                            summary_row = {
-                                                "Sample Name": assay_name_key,
-                                                "Treatment": treatment_group,
-                                                "Well ID": well_col_name_calc,
-                                                "Trend of killing": killed_status,
-                                                "Half-killing target (Hour)": closest_hour_display,
-                                                "Half-killing target (hh:mm:ss)": closest_hhmmss_display,
-                                                "Half-killing time (Hour)": half_killing_display
-                                            }
-                                            half_killing_summary_data.append(summary_row)
+                                        summary_row = {
+                                            "Sample Name": assay_name_key,
+                                            "Treatment": treatment_group,
+                                            "Well ID": well_col_name_calc,
+                                            "Trend of killing": killed_status,
+                                            "Half-killing target (Hour)": closest_hour_display,
+                                            "Half-killing target (hh:mm:ss)": closest_hhmmss_display,
+                                            "Half-killing time (Hour)": half_killing_display
+                                        }
+                                        half_killing_summary_data.append(summary_row)
 
-                                            # Store data for print report
-                                            sample_type = "Sample"
-                                            if current_file_results.get('positive_control') and assay_name_key == current_file_results['positive_control']:
-                                                sample_type = "Positive Control"
+                                        # Store data for print report
+                                        sample_type = "Sample"
+                                        if current_file_results.get('positive_control') and assay_name_key == current_file_results['positive_control']:
+                                            sample_type = "Positive Control"
 
-                                            # Use appropriate values based on killed status
-                                            if killed_status == "Yes":
-                                                time_half_report_display = time_half_report
-                                                half_val_report_display = half_val_report
-                                            else:
-                                                # Use None instead of "N/A" to avoid Arrow serialization errors
-                                                time_half_report_display = None
-                                                half_val_report_display = None
+                                        # Use appropriate values based on killed status
+                                        if killed_status == "Yes":
+                                            time_half_report_display = time_half_report
+                                            half_val_report_display = half_val_report
+                                        else:
+                                            # Use None instead of "N/A" to avoid Arrow serialization errors
+                                            time_half_report_display = None
+                                            half_val_report_display = None
 
-                                            print_report_data.append({
-                                                "Sample Name": assay_name_key,
-                                                "Sample Type": sample_type,
-                                                "Target": assay_type,
-                                                "Time (Hour) at max cell index": time_max_report,
-                                                "Max cell index": max_val_report,
-                                                "Time (Hour) at half cell index": time_half_report_display,
-                                                "Half cell index": half_val_report_display
-                                            })
+                                        print_report_data.append({
+                                            "Sample Name": assay_name_key,
+                                            "Sample Type": sample_type,
+                                            "Target": assay_type,
+                                            "Time (Hour) at max cell index": time_max_report,
+                                            "Max cell index": max_val_report,
+                                            "Time (Hour) at half cell index": time_half_report_display,
+                                            "Half cell index": half_val_report_display
+                                        })
                                     # --- End of Half-Killing Time Calculation ---
                                     st.markdown("---")
     
@@ -1417,7 +1412,7 @@ if uploaded_file:
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
                     existing_columns_in_order = [col for col in column_order if col in closest_df.columns]
                     closest_df = closest_df[existing_columns_in_order]
-                    st.dataframe(closest_df)
+                    st.dataframe(closest_df.fillna("N/A"))
 
                     # --- Calculate "Killed below half max cell index Summary" for stats_df ---
                     kill_summary_series = pd.Series(dtype=str) # Initialize an empty Series
@@ -1454,13 +1449,6 @@ if uploaded_file:
                         if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
                             for treatment_group, assays in st.session_state.extracted_treatment_data.items():
                                 for sample_name, assay_data in assays.items():
-                                    # Skip MED/CMM/Only samples from this check
-                                    sample_name_str = str(sample_name).strip()
-                                    is_med_only_sample = sample_name_str.upper().startswith("MED") or sample_name_str.upper().startswith("CMM") or re.search(r"\bonly\b", sample_name_str, flags=re.IGNORECASE)
-
-                                    if is_med_only_sample:
-                                        continue
-
                                     # Handle both old format (list) and new format (dict)
                                     if isinstance(assay_data, dict):
                                         input_ids = assay_data.get('input_ids', [])
@@ -1544,15 +1532,60 @@ if uploaded_file:
                         stats_df['Number of Replicates'] = stats_df['Sample Name'].map(actual_replicate_counts)
 
                         # Add "Trend of Killing" column:
-                        # "Yes" = Cells killed AND CI does NOT recover above half-max at last time point.
-                        # "No"  = Cells never killed (All No) OR CI recovers above half-max at last time point.
+                        # Regular samples: "Yes" only when ALL wells say "Yes" AND no CI recovery
+                        # NTC (MED/CMM/Only): averaged trace approach (endpoint CI vs CImax/2)
                         kill_summary_dict = kill_summary_series.to_dict() if not kill_summary_series.empty else {}
+
                         def _trend_of_killing(sample_name):
-                            summary = kill_summary_dict.get(sample_name, "")
-                            # "Yes" ONLY when every replicate is "Yes" AND no CI recovery
-                            if summary == "All Yes" and not sample_recovery_status.get(sample_name, False):
-                                return "Yes"
-                            return "No"
+                            sample_str = str(sample_name).strip()
+                            is_ntc = sample_str.upper().startswith("MED") or sample_str.upper().startswith("CMM") or re.search(r"\bonly\b", sample_str, flags=re.IGNORECASE)
+
+                            if is_ntc:
+                                # Averaged trace approach for NTC
+                                if not st.session_state.get('extracted_treatment_data') or st.session_state.get('main_data_df') is None:
+                                    return "No"
+                                for tg, assays in st.session_state.extracted_treatment_data.items():
+                                    if sample_name in assays:
+                                        assay_data = assays[sample_name]
+                                        if isinstance(assay_data, dict):
+                                            input_ids = assay_data.get('input_ids', [])
+                                        else:
+                                            input_ids = assay_data
+                                        potential_cols = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                        valid_cols = [c for c in potential_cols if c in st.session_state.main_data_df.columns]
+                                        if not valid_cols:
+                                            return "No"
+                                        well_data_dict = {}
+                                        for well_col in valid_cols:
+                                            try:
+                                                well_series = pd.to_numeric(st.session_state.main_data_df[well_col], errors='coerce')
+                                                if well_series.notna().sum() == 0:
+                                                    continue
+                                                if effector_time_hours is not None and "Time (Hour)" in st.session_state.main_data_df.columns:
+                                                    time_s = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+                                                    ci = (time_s - effector_time_hours).abs().idxmin()
+                                                    ct = time_s.loc[ci]
+                                                    well_series = well_series[time_s >= ct]
+                                                if well_series.notna().sum() > 0:
+                                                    well_data_dict[well_col] = well_series
+                                            except Exception:
+                                                continue
+                                        if not well_data_dict:
+                                            return "No"
+                                        wells_df = pd.DataFrame(well_data_dict)
+                                        avg_trace = wells_df.mean(axis=1)
+                                        avg_cimax = avg_trace.max()
+                                        avg_cimax_half = avg_cimax / 2
+                                        endpoint_ci = avg_trace.iloc[-1]
+                                        return "Yes" if endpoint_ci <= avg_cimax_half else "No"
+                                return "No"
+                            else:
+                                # Per-well logic for regular samples
+                                summary = kill_summary_dict.get(sample_name, "")
+                                if summary == "All Yes" and not sample_recovery_status.get(sample_name, False):
+                                    return "Yes"
+                                return "No"
+
                         stats_df["Trend of Killing"] = stats_df["Sample Name"].map(_trend_of_killing)
                         # If sample name not found in mapping, default to the number of data points we have
                         stats_df['Number of Replicates'] = stats_df['Number of Replicates'].fillna(
@@ -1570,6 +1603,14 @@ if uploaded_file:
                         # Multiple identical data points will have std=0, mean=value. CV = 0.
                         stats_df.loc[stats_df["Std Dev Half-killing time (Hour)"].fillna(0) == 0, "%CV Half-killing time (Hour)"] = 0.0
                         
+                        # Compute %CV Pass/Fail BEFORE formatting columns as strings
+                        if "%CV Half-killing time (Hour)" in stats_df.columns:
+                            stats_df["%CV Pass/Fail"] = np.where(stats_df["%CV Half-killing time (Hour)"] > 30, "Fail", "Pass")
+                            # If %CV is NaN, `> 30` is False, so it becomes "Pass". This aligns with "otherwise Pass".
+                        else:
+                            # Handle case where "%CV Half-killing time (Hour)" might be missing (e.g., if all inputs were single points)
+                            stats_df["%CV Pass/Fail"] = "N/A"
+
                         # Round the numerical columns to 2 decimal places and format as strings
                         cols_to_round = ["Average Half-killing time (Hour)", "Std Dev Half-killing time (Hour)", "%CV Half-killing time (Hour)"]
                         for col in cols_to_round:
@@ -1577,16 +1618,6 @@ if uploaded_file:
                                 # Convert to numeric, round to 2 decimals, then format as string with exactly 2 decimal places
                                 numeric_values = pd.to_numeric(stats_df[col], errors='coerce')
                                 stats_df[col] = numeric_values.apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-                        
-                        # Add "%CV Pass/Fail" column
-                        # Ensure "%CV Half-killing time (Hour)" is numeric for the comparison
-                        if "%CV Half-killing time (Hour)" in stats_df.columns:
-                            stats_df["%CV Half-killing time (Hour)"] = pd.to_numeric(stats_df["%CV Half-killing time (Hour)"], errors='coerce')
-                            stats_df["%CV Pass/Fail"] = np.where(stats_df["%CV Half-killing time (Hour)"] > 30, "Fail", "Pass")
-                            # If %CV is NaN, `> 30` is False, so it becomes "Pass". This aligns with "otherwise Pass".
-                        else:
-                            # Handle case where "%CV Half-killing time (Hour)" might be missing (e.g., if all inputs were single points)
-                            stats_df["%CV Pass/Fail"] = "N/A"
 
 
                         # Merge the kill summary into stats_df
@@ -1672,7 +1703,7 @@ if uploaded_file:
                                     pass
                             return styles
 
-                        st.dataframe(stats_df.astype(str).style.apply(highlight_low_replicates, axis=1))
+                        st.dataframe(stats_df.fillna("N/A").astype(str).style.apply(highlight_low_replicates, axis=1))
 
                         # Store results for this file
                         current_file_results['stats_df'] = stats_df.copy()
