@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.995"
+APP_VERSION = "0.996"
 
 # Import the necessary libraries
 import streamlit as st
@@ -194,6 +194,10 @@ def determine_assay_status(extracted_treatment_data, main_df, excel_file=None):
                 
                 # Calculate average CI across wells for each time point (row-wise mean)
                 avg_ci_per_timepoint = wells_df.mean(axis=1)
+                
+                # Guard against all-NaN data
+                if avg_ci_per_timepoint.isna().all():
+                    return "Fail"
                 
                 # Find the maximum of the averaged CI values
                 avg_max_ci = avg_ci_per_timepoint.max()
@@ -782,7 +786,7 @@ if uploaded_file:
 
                                                         # Only search for half-killing target AFTER the max value
                                                         data_after_max = well_data_filtered_hl.loc[idx_max_value:]
-                                                        if len(data_after_max) >= 1:  # Need at least one point after max
+                                                        if len(data_after_max) >= 1:
                                                             # Only exclude the max point if there's more than one point
                                                             if len(data_after_max) > 1:
                                                                 data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
@@ -1073,9 +1077,6 @@ if uploaded_file:
                                                             time_half_report = closest_to_0_5_hour_val
                                                             # Capture the actual CI at the closest-to-half-max point
                                                             closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
-                                                        else:
-                                                            # No data after max, can't calculate half-killing time
-                                                            continue
                                                     else:
                                                         # No data after max, can't calculate half-killing time
                                                         continue
@@ -1428,6 +1429,7 @@ if uploaded_file:
                         st.markdown("---")
                         st.header("Half-killing Time Statistics by Sample")
                         st.write ("Valid sample: %CV <= 30% & Killed below half max cell index = Yes for all wells & Average half-killing time <= 12 hours & Cell index does NOT recover above half-max at last time point")
+                        st.write ("Valid negative control (MED/CMM/Only): Average endpoint CI > average max CI / 2 (cells should survive, Trend of Killing = No)")
                         
                         
                         # Ensure 'Half-killing time (Hour)' is numeric
@@ -1574,6 +1576,8 @@ if uploaded_file:
                                             return "No"
                                         wells_df = pd.DataFrame(well_data_dict)
                                         avg_trace = wells_df.mean(axis=1)
+                                        if avg_trace.isna().all():
+                                            return "N/A"
                                         avg_cimax = avg_trace.max()
                                         avg_cimax_half = avg_cimax / 2
                                         endpoint_ci = avg_trace.iloc[-1]
@@ -1601,12 +1605,21 @@ if uploaded_file:
                         # If mean is 0, %CV can be NaN/inf, which is arithmetically correct.
                         # A single data point will have std=NaN, mean=value. CV = NaN.
                         # Multiple identical data points will have std=0, mean=value. CV = 0.
-                        stats_df.loc[stats_df["Std Dev Half-killing time (Hour)"].fillna(0) == 0, "%CV Half-killing time (Hour)"] = 0.0
+                        # Replace NaN in %CV with 0 ONLY when std is 0/NaN but mean has a valid value.
+                        # If mean is also NaN (no data), %CV should remain NaN.
+                        std_is_zero_or_nan = stats_df["Std Dev Half-killing time (Hour)"].fillna(0) == 0
+                        mean_is_valid = stats_df["Average Half-killing time (Hour)"].notna()
+                        stats_df.loc[std_is_zero_or_nan & mean_is_valid, "%CV Half-killing time (Hour)"] = 0.0
+                        # Replace inf/-inf with NaN (occurs when average is 0)
+                        stats_df["%CV Half-killing time (Hour)"] = stats_df["%CV Half-killing time (Hour)"].replace([np.inf, -np.inf], np.nan)
                         
                         # Compute %CV Pass/Fail BEFORE formatting columns as strings
                         if "%CV Half-killing time (Hour)" in stats_df.columns:
-                            stats_df["%CV Pass/Fail"] = np.where(stats_df["%CV Half-killing time (Hour)"] > 30, "Fail", "Pass")
-                            # If %CV is NaN, `> 30` is False, so it becomes "Pass". This aligns with "otherwise Pass".
+                            cv_values = stats_df["%CV Half-killing time (Hour)"]
+                            stats_df["%CV Pass/Fail"] = np.where(
+                                cv_values.isna(), "N/A",
+                                np.where(cv_values > 30, "Fail", "Pass")
+                            )
                         else:
                             # Handle case where "%CV Half-killing time (Hour)" might be missing (e.g., if all inputs were single points)
                             stats_df["%CV Pass/Fail"] = "N/A"
@@ -1638,17 +1651,57 @@ if uploaded_file:
                             # Sample is invalid if it has recovery (True in sample_recovery_status)
                             no_recovery_series = stats_df["Sample Name"].map(lambda x: not sample_recovery_status.get(x, False))
 
-                            # Valid if: All killed + %CV Pass + Average time <= 12 hours + No recovery at last time point
-                            condition = (
+                            # Detect negative control samples (MED/CMM/Only)
+                            is_negative_control = stats_df["Sample Name"].apply(
+                                lambda x: (
+                                    str(x).strip().upper().startswith("MED") or
+                                    str(x).strip().upper().startswith("CMM") or
+                                    bool(re.search(r"\bonly\b", str(x).strip(), flags=re.IGNORECASE))
+                                )
+                            )
+
+                            # Regular sample criteria: All killed + %CV Pass + Average time <= 12 hours + No recovery
+                            regular_condition = (
                                 (stats_df["Killed below half max cell index Summary"] == "All Yes") &
                                 (stats_df["%CV Pass/Fail"] == "Pass") &
                                 (avg_time_numeric <= 12) &
                                 no_recovery_series
                             )
-                            stats_df["Sample (Valid/Invalid)"] = np.where(condition, "Valid", "Invalid")
+
+                            # Negative control criteria: endpoint CI > max CI / 2 (cells should survive)
+                            # This is already captured by Trend of Killing: "No" means cells survived (Valid)
+                            negative_ctrl_condition = (stats_df["Trend of Killing"] == "No")
+
+                            # Apply different criteria based on sample type
+                            stats_df["Sample (Valid/Invalid)"] = np.where(
+                                is_negative_control,
+                                np.where(negative_ctrl_condition, "Valid", "Invalid"),
+                                np.where(regular_condition, "Valid", "Invalid")
+                            )
                         else:
                             # If prerequisite columns are missing, default to "Invalid"
                             stats_df["Sample (Valid/Invalid)"] = "Invalid"
+
+                        # --- Check for Assay Failure and override all samples to "Invalid Assay" ---
+                        assay_failed = False
+
+                        # Check 1: Negative control failure (assay_status already set by determine_assay_status)
+                        if current_file_results.get('assay_status') == "Fail":
+                            assay_failed = True
+
+                        # Check 2: Positive control failure (PC is Invalid in stats_df)
+                        pc_name = current_file_results.get('positive_control')
+                        if not assay_failed and pc_name and pc_name != "None" and "Sample (Valid/Invalid)" in stats_df.columns:
+                            pc_row = stats_df[stats_df["Sample Name"] == pc_name]
+                            if not pc_row.empty:
+                                pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
+                                if pc_validity == "Invalid":
+                                    assay_failed = True
+                                    current_file_results['assay_status'] = "Fail"
+
+                        # If assay failed, override ALL samples to "Invalid Assay"
+                        if assay_failed and "Sample (Valid/Invalid)" in stats_df.columns:
+                            stats_df["Sample (Valid/Invalid)"] = "Invalid Assay"
 
                         # Reorder columns in stats_df to place new columns logically
                         desired_column_order = ["Sample Name"]
@@ -1708,17 +1761,14 @@ if uploaded_file:
                         # Store results for this file
                         current_file_results['stats_df'] = stats_df.copy()
 
-                        # --- Positive Control Validation ---
-                        # Check if selected PC is invalid
+                        # --- Positive Control Validation Warning ---
+                        # The actual check and "Invalid Assay" override happened above before display.
+                        # Show warning message if PC caused assay failure.
                         pc_name = current_file_results.get('positive_control')
                         if pc_name and pc_name != "None" and "Sample (Valid/Invalid)" in stats_df.columns:
-                            # Find row for PC
                             pc_row = stats_df[stats_df["Sample Name"] == pc_name]
-                            if not pc_row.empty:
-                                pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
-                                if pc_validity == "Invalid":
-                                    current_file_results['assay_status'] = "Fail"
-                                    st.warning(f"Assay Failed: Positive Control '{pc_name}' is Invalid.")
+                            if not pc_row.empty and pc_row.iloc[0]["Sample (Valid/Invalid)"] == "Invalid Assay":
+                                st.warning(f"Assay Failed: Positive Control '{pc_name}' is Invalid.")
                         # --- End of Positive Control Validation ---
 
                         # Store highlighting info for stats table (for Excel export)
@@ -1775,7 +1825,7 @@ if uploaded_file:
                         pc_row = current_file_results['stats_df'][current_file_results['stats_df']["Sample Name"] == pc_name]
                         if not pc_row.empty:
                             pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
-                            if pc_validity == "Invalid":
+                            if pc_validity in ("Invalid", "Invalid Assay"):
                                 pc_status_for_checklist = "Fail"
                                 final_assay_status = "Fail" # Ensure fail
                             else:
