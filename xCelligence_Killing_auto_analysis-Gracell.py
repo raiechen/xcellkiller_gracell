@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.996"
+APP_VERSION = "0.997"
 
 # Import the necessary libraries
 import streamlit as st
@@ -962,6 +962,14 @@ if uploaded_file:
                                         ci_max_over_2_report = None  # CImax/2 value
                                         closest_ci_report = None   # Closest CI value to CImax/2
                                         endpoint_ci_report = None  # Cell Index at last time point
+                                        half_killing_time_calc = None
+                                        closest_to_0_5_hour_val = None
+                                        closest_to_0_5_hhmmss_val = None
+                                        time_max_report = None
+                                        time_max_hhmmss_report = None
+                                        max_val_report = None
+                                        half_val_report = None
+                                        time_half_report = None
                                         
                                         # Determine assay type for this file
                                         assay_type = "Error - test type can't be found in file name"
@@ -1055,31 +1063,31 @@ if uploaded_file:
 
                                                     # Find time closest to half-killing target ONLY AFTER the max value
                                                     data_after_max = well_data_filtered_calc.loc[idx_max_value:]
-                                                    if len(data_after_max) >= 1:  # Need at least one point after max
-                                                        # Only exclude the max point if there's more than one point
-                                                        if len(data_after_max) > 1:
-                                                            data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
-                                                        if not data_after_max.empty:
-                                                            idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
+                                                    if len(data_after_max) > 1:  # Need at least one point after max
+                                                        data_after_max = data_after_max.iloc[1:]  # Exclude the max point itself
+                                                        idx_closest_to_target = (data_after_max - half_killing_target).abs().idxmin()
 
-                                                            # Get the time values
-                                                            closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
-                                                            closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
+                                                        # Get the time values
+                                                        closest_to_0_5_hour_val = assay_display_df.loc[idx_closest_to_target, "Time (Hour)"]
+                                                        closest_to_0_5_hhmmss_val = assay_display_df.loc[idx_closest_to_target, "Time (hh:mm:ss)"]
 
-                                                            # Half-killing time = time at half-killing target - time at max value
-                                                            half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
+                                                        # Half-killing time = time at half-killing target - time at max value
+                                                        half_killing_time_calc = closest_to_0_5_hour_val - time_at_max_hour
 
-                                                            # Capture data for Print Report
-                                                            max_val_report = max_value
-                                                            time_max_report = time_at_max_hour
-                                                            time_max_hhmmss_report = time_at_max_hhmmss
-                                                            half_val_report = half_killing_target
-                                                            time_half_report = closest_to_0_5_hour_val
-                                                            # Capture the actual CI at the closest-to-half-max point
+                                                        # Capture data for Print Report
+                                                        max_val_report = max_value
+                                                        time_max_report = time_at_max_hour
+                                                        time_max_hhmmss_report = time_at_max_hhmmss
+                                                        half_val_report = half_killing_target
+                                                        time_half_report = closest_to_0_5_hour_val
+                                                        # Capture the actual CI at the closest-to-half-max point
+                                                        if idx_closest_to_target in well_data_filtered_calc.index:
                                                             closest_ci_report = float(well_data_filtered_calc.loc[idx_closest_to_target])
                                                     else:
-                                                        # No data after max, can't calculate half-killing time
-                                                        continue
+                                                        # No data after max — still capture max info for reporting
+                                                        max_val_report = max_value
+                                                        time_max_report = time_at_max_hour
+                                                        time_max_hhmmss_report = time_at_max_hhmmss
                                                     
                                                 # CORRECTED LOGIC: Determine killed status based on assay type
                                                 # Check if cells drop below half of their max value (half-killing target)
@@ -1196,6 +1204,7 @@ if uploaded_file:
                                     
                     
                 # --- Display the new DataFrame for "Half-Killing Time" values ---
+                ntc_no_trend_samples = set()  # Track NTC samples overridden to "No"
                 if closest_to_half_target_data:
                     
                     # --- Plotting Section ---
@@ -1408,6 +1417,70 @@ if uploaded_file:
 
                     st.header("Summary: Half-Killing Time Analysis")
                     closest_df = pd.DataFrame(closest_to_half_target_data)
+
+                    # --- Override per-well trend for negative control (NTC) samples ---
+                    # Use the averaged-trace approach (same as stats_df) so that per-well
+                    # "Trend of killing" is consistent with the sample-level value.
+                    if not closest_df.empty and "Sample Name" in closest_df.columns:
+                        ntc_sample_names = closest_df["Sample Name"].unique()
+                        for sname in ntc_sample_names:
+                            sname_str = str(sname).strip()
+                            is_ntc = (
+                                sname_str.upper().startswith("MED")
+                                or sname_str.upper().startswith("CMM")
+                                or bool(re.search(r"\bonly\b", sname_str, flags=re.IGNORECASE))
+                            )
+                            if not is_ntc:
+                                continue
+
+                            # Compute averaged-trace trend for this NTC sample
+                            ntc_trend = "No"  # default: cells survived
+                            if st.session_state.get('extracted_treatment_data') and st.session_state.get('main_data_df') is not None:
+                                for tg, assays in st.session_state.extracted_treatment_data.items():
+                                    if sname in assays:
+                                        assay_data = assays[sname]
+                                        input_ids = assay_data.get('input_ids', []) if isinstance(assay_data, dict) else assay_data
+                                        potential_cols = [str(id_str).strip() for id_str in input_ids if id_str is not None]
+                                        valid_cols = [c for c in potential_cols if c in st.session_state.main_data_df.columns]
+                                        if not valid_cols:
+                                            break
+                                        well_data_dict = {}
+                                        for well_col in valid_cols:
+                                            try:
+                                                well_series = pd.to_numeric(st.session_state.main_data_df[well_col], errors='coerce')
+                                                if well_series.notna().sum() == 0:
+                                                    continue
+                                                if effector_time_hours is not None and "Time (Hour)" in st.session_state.main_data_df.columns:
+                                                    time_s = pd.to_numeric(st.session_state.main_data_df["Time (Hour)"], errors='coerce')
+                                                    ci = (time_s - effector_time_hours).abs().idxmin()
+                                                    ct = time_s.loc[ci]
+                                                    well_series = well_series[time_s >= ct]
+                                                if well_series.notna().sum() > 0:
+                                                    well_data_dict[well_col] = well_series
+                                            except Exception:
+                                                continue
+                                        if well_data_dict:
+                                            wells_df = pd.DataFrame(well_data_dict)
+                                            avg_trace = wells_df.mean(axis=1)
+                                            if not avg_trace.isna().all():
+                                                avg_cimax = avg_trace.max()
+                                                avg_cimax_half = avg_cimax / 2
+                                                endpoint_ci = avg_trace.iloc[-1]
+                                                ntc_trend = "Yes" if endpoint_ci <= avg_cimax_half else "No"
+                                        break
+
+                            # Apply override: if NTC trend is "No", set per-well trend and N/A times
+                            if ntc_trend == "No":
+                                ntc_no_trend_samples.add(sname)
+                                mask = closest_df["Sample Name"] == sname
+                                closest_df.loc[mask, "Trend of killing"] = "No"
+                                for col in ["Closest to CImax/2", "Closest Time to 1/2 Max Cell Index (Hour)",
+                                            "Closest Time to 1/2 Max Cell Index (hh:mm:ss)",
+                                            "Half-killing time (Hour)", "Half Cell Killing Time"]:
+                                    if col in closest_df.columns:
+                                        closest_df.loc[mask, col] = None
+                    # --- End of NTC trend override ---
+
                     # Ensure correct column order for display, including the new column
                     column_order = ["Sample Name", "Trend of killing", "Max Cell Index", "CImax/2", "Closest to CImax/2", "Endpoint Cell Index", "Max cell index time (Hour)", "Max cell index time (hh:mm:ss)", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)", "Half Cell Killing Time"]
                     # Filter for columns that actually exist in closest_df to prevent KeyErrors if a column was unexpectedly not added
@@ -1684,6 +1757,7 @@ if uploaded_file:
 
                         # --- Check for Assay Failure and override all samples to "Invalid Assay" ---
                         assay_failed = False
+                        pc_caused_failure = False
 
                         # Check 1: Negative control failure (assay_status already set by determine_assay_status)
                         if current_file_results.get('assay_status') == "Fail":
@@ -1691,16 +1765,17 @@ if uploaded_file:
 
                         # Check 2: Positive control failure (PC is Invalid in stats_df)
                         pc_name = current_file_results.get('positive_control')
-                        if not assay_failed and pc_name and pc_name != "None" and "Sample (Valid/Invalid)" in stats_df.columns:
+                        if not assay_failed and pc_name and pc_name != "None" and stats_df is not None and "Sample (Valid/Invalid)" in stats_df.columns:
                             pc_row = stats_df[stats_df["Sample Name"] == pc_name]
                             if not pc_row.empty:
                                 pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
                                 if pc_validity == "Invalid":
                                     assay_failed = True
+                                    pc_caused_failure = True
                                     current_file_results['assay_status'] = "Fail"
 
                         # If assay failed, override ALL samples to "Invalid Assay"
-                        if assay_failed and "Sample (Valid/Invalid)" in stats_df.columns:
+                        if assay_failed and stats_df is not None and "Sample (Valid/Invalid)" in stats_df.columns:
                             stats_df["Sample (Valid/Invalid)"] = "Invalid Assay"
 
                         # Reorder columns in stats_df to place new columns logically
@@ -1762,13 +1837,9 @@ if uploaded_file:
                         current_file_results['stats_df'] = stats_df.copy()
 
                         # --- Positive Control Validation Warning ---
-                        # The actual check and "Invalid Assay" override happened above before display.
-                        # Show warning message if PC caused assay failure.
-                        pc_name = current_file_results.get('positive_control')
-                        if pc_name and pc_name != "None" and "Sample (Valid/Invalid)" in stats_df.columns:
-                            pc_row = stats_df[stats_df["Sample Name"] == pc_name]
-                            if not pc_row.empty and pc_row.iloc[0]["Sample (Valid/Invalid)"] == "Invalid Assay":
-                                st.warning(f"Assay Failed: Positive Control '{pc_name}' is Invalid.")
+                        # Only show PC failure warning when the PC itself caused the assay failure
+                        if pc_caused_failure:
+                            st.warning(f"Assay Failed: Positive Control '{pc_name}' is Invalid.")
                         # --- End of Positive Control Validation ---
 
                         # Store highlighting info for stats table (for Excel export)
@@ -1797,6 +1868,15 @@ if uploaded_file:
                 # --- Create and Store Print Report DataFrame ---
                 if print_report_data:
                     print_report_df = pd.DataFrame(print_report_data)
+
+                    # Override print report for NTC samples where trend was "No"
+                    if ntc_no_trend_samples and "Sample Name" in print_report_df.columns:
+                        for col in ["Time (Hour) at half cell index", "Half cell index"]:
+                            if col in print_report_df.columns:
+                                print_report_df.loc[
+                                    print_report_df["Sample Name"].isin(ntc_no_trend_samples), col
+                                ] = None
+
                     # Ensure column order
                     pr_cols = ["Sample Name", "Sample Type", "Target", "Time (Hour) at max cell index", "Max cell index", "Time (Hour) at half cell index", "Half cell index"]
                     # Filter for existing columns
@@ -1825,7 +1905,7 @@ if uploaded_file:
                         pc_row = current_file_results['stats_df'][current_file_results['stats_df']["Sample Name"] == pc_name]
                         if not pc_row.empty:
                             pc_validity = pc_row.iloc[0]["Sample (Valid/Invalid)"]
-                            if pc_validity in ("Invalid", "Invalid Assay"):
+                            if pc_validity == "Invalid":
                                 pc_status_for_checklist = "Fail"
                                 final_assay_status = "Fail" # Ensure fail
                             else:
