@@ -1127,24 +1127,23 @@ if uploaded_file:
                                             continue
     
                                         # Create summary data rows (moved outside the try block)
+                                        # Always populate closest-to-half values (even for negative controls)
+                                        closest_hour_display = closest_to_0_5_hour_val
+                                        closest_hhmmss_display = closest_to_0_5_hhmmss_val
                                         # Only include half-killing time if cells were actually killed
                                         if killed_status == "Yes":
                                             half_killing_display = half_killing_time_calc
-                                            closest_hour_display = closest_to_0_5_hour_val
-                                            closest_hhmmss_display = closest_to_0_5_hhmmss_val
                                         else:
                                             # Cells never dropped below half max, so no half-killing time
                                             # Use None instead of "N/A" to avoid Arrow serialization errors
                                             half_killing_display = None
-                                            closest_hour_display = None
-                                            closest_hhmmss_display = None
 
                                         target_data_row = {
                                             "Sample Name": assay_name_key,
                                             "Trend of killing": killed_status,
                                             "Max Cell Index": max_ci_report,
                                             "CImax/2": ci_max_over_2_report,
-                                            "Closest to CImax/2": closest_ci_report if killed_status == "Yes" else None,
+                                            "Closest to CImax/2": closest_ci_report,
                                             "Endpoint Cell Index": endpoint_ci_report,
                                             "Max cell index time (Hour)": time_max_report,
                                             "Max cell index time (hh:mm:ss)": time_max_hhmmss_report,
@@ -1474,9 +1473,7 @@ if uploaded_file:
                                 ntc_no_trend_samples.add(sname)
                                 mask = closest_df["Sample Name"] == sname
                                 closest_df.loc[mask, "Trend of killing"] = "No"
-                                for col in ["Closest to CImax/2", "Closest Time to 1/2 Max Cell Index (Hour)",
-                                            "Closest Time to 1/2 Max Cell Index (hh:mm:ss)",
-                                            "Half-killing time (Hour)", "Half Cell Killing Time"]:
+                                for col in ["Half-killing time (Hour)", "Half Cell Killing Time"]:
                                     if col in closest_df.columns:
                                         closest_df.loc[mask, col] = None
                     # --- End of NTC trend override ---
