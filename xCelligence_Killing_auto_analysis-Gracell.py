@@ -1,5 +1,5 @@
 # App Version - Update this to change version throughout the app
-APP_VERSION = "0.997"
+APP_VERSION = "0.998"
 
 # Import the necessary libraries
 import streamlit as st
@@ -1127,15 +1127,16 @@ if uploaded_file:
                                             continue
     
                                         # Create summary data rows (moved outside the try block)
-                                        # Always populate closest-to-half values (even for negative controls)
-                                        closest_hour_display = closest_to_0_5_hour_val
-                                        closest_hhmmss_display = closest_to_0_5_hhmmss_val
-                                        # Only include half-killing time if cells were actually killed
                                         if killed_status == "Yes":
+                                            closest_hour_display = closest_to_0_5_hour_val
+                                            closest_hhmmss_display = closest_to_0_5_hhmmss_val
                                             half_killing_display = half_killing_time_calc
                                         else:
-                                            # Cells never dropped below half max, so no half-killing time
+                                            # No killing trend: clear closest-to-half and half-killing fields
                                             # Use None instead of "N/A" to avoid Arrow serialization errors
+                                            closest_ci_report = None
+                                            closest_hour_display = None
+                                            closest_hhmmss_display = None
                                             half_killing_display = None
 
                                         target_data_row = {
