@@ -1474,7 +1474,7 @@ if uploaded_file:
                                 ntc_no_trend_samples.add(sname)
                                 mask = closest_df["Sample Name"] == sname
                                 closest_df.loc[mask, "Trend of killing"] = "No"
-                                for col in ["Half-killing time (Hour)", "Half Cell Killing Time"]:
+                                for col in ["Closest to CImax/2", "Closest Time to 1/2 Max Cell Index (Hour)", "Closest Time to 1/2 Max Cell Index (hh:mm:ss)", "Half-killing time (Hour)", "Half Cell Killing Time"]:
                                     if col in closest_df.columns:
                                         closest_df.loc[mask, col] = None
                     # --- End of NTC trend override ---
